@@ -1,10 +1,16 @@
 import tkinter as tk
-import functools
+from collections import ChainMap
 from string import Formatter
 from xml.etree.ElementTree import XML
 
+def select_keys(m, keys):
+    return {k:m[k] for k in keys if k in m}
+
+def disassoc(m, keys):
+    return {k:m[k] for k in m.keys() if k not in keys}
+
 PACK_OPTIONS = ['side', 'padx', 'pady', 'expand']
-BINDING_OPTIONS = ['id', 'type']
+BIND_OPTIONS = ['id']
 
 def on_command_delegate(id, bindings):
     def inner():
@@ -12,6 +18,7 @@ def on_command_delegate(id, bindings):
         try:
             cb(bindings)
         except:
+            # Don't force bindings to be taken
             cb()
     return inner
 
@@ -36,14 +43,10 @@ def register(name, xml, defaults):
     assert all(name in defaults for name in names), "Must provide default for each key"
 
     def widget_factory(master, element, bindings):
-        opts = defaults.copy()
-        opts.update(element.attrib)
-        pack_options = {k:v 
-                        for k,v in opts.items()
-                        if k in PACK_OPTIONS} 
-        widget, default_pack_opts = realize(master, XML(xml.format(**opts)), bindings=bindings)
-        default_pack_opts.update(pack_options)
-        return widget, default_pack_opts
+        options = ChainMap(element.attrib, defaults)
+        widget, pack_options = realize(master, XML(xml.format(**options)), bindings=bindings)
+        pack_options = ChainMap(select_keys(options, PACK_OPTIONS), pack_options)
+        return widget, pack_options
     __custom_elements[name] = widget_factory
 
     
@@ -52,16 +55,9 @@ def realize(master, element, bindings=None):
     if bindings is None:
         bindings = dict()
 
-    elem_options = {k:v 
-                    for k,v in element.attrib.items() 
-                      if k not in PACK_OPTIONS 
-                      and k not in BINDING_OPTIONS}
-    pack_options = {k:v 
-                    for k,v in element.attrib.items() 
-                       if k in PACK_OPTIONS} 
-    bind_options = {k:v 
-                    for k,v in element.attrib.items() 
-                       if k in BINDING_OPTIONS} 
+    elem_options = disassoc(element.attrib, PACK_OPTIONS + BIND_OPTIONS)
+    pack_options = select_keys(element.attrib, PACK_OPTIONS)
+    bind_options = select_keys(element.attrib, BIND_OPTIONS)
     
     if element.tag in ["form", 'group']:
         widget = tk.Frame(master, **elem_options)
@@ -72,6 +68,7 @@ def realize(master, element, bindings=None):
         if element:
             for subelement in element:
                 elem_options[subelement.tag] = subelement.text
+
         bind(element, elem_options, bind_options, bindings)
         if element.tag in __custom_elements:
             widget, pack_options = __custom_elements[element.tag](master, element, bindings)
