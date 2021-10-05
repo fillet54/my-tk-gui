@@ -12,6 +12,19 @@ def disassoc(m, keys):
 PACK_OPTIONS = ['side', 'padx', 'pady', 'expand']
 BIND_OPTIONS = ['id']
 
+def create_change_listener(var):
+    change_listeners = []
+    def add_change_listener(listener):
+        change_listeners.append(listener)
+    def on_change_action(var):
+        for listener in change_listeners:
+            try:
+                listener(var)
+            except:
+                pass
+    var.trace('w', lambda nm, idx, mode, var=var: on_change_action(var))
+    return add_change_listener
+
 def on_command_delegate(id, bindings):
     def inner():
         cb = bindings.get(id, lambda bindings: None)
@@ -22,20 +35,30 @@ def on_command_delegate(id, bindings):
             cb()
     return inner
 
-def bind(element, elem_options, bind_options, bindings):
-    if 'id' in bind_options and len(bind_options['id']):
-        id = bind_options['id']
+def bind(element, widget, bindings):
+    if 'id' in element.attrib and len(element.attrib['id']):
+        id = element.attrib['id']
+
+        # Not sure how to properly handle custom components
+        # and binding for now if something is already bound then return
+        if id in bindings:
+            return 
+
         if element.tag in ['entry']:
             bindings[id] = tk.StringVar()
-            elem_options['textvariable'] = bindings[id]
+            widget.configure(textvariable=bindings[id])
         elif element.tag in ['checkbutton']:
             bindings[id] = tk.IntVar()
-            elem_options['variable'] = bindings[id]
+            widget.configure(variable=bindings[id])
         elif element.tag in ['button']: 
             command = on_command_delegate('on_%s_click' % id, bindings)
-            elem_options['command'] = command
-    elif len(bind_options) > 0:
-        print("WARNING: ID required for binding")
+            widget.configure(command=command)
+
+        if element.tag in ['entry', 'checkbutton']:
+            bindings['on_%s_change' % id] = create_change_listener(bindings[id])
+
+        # common bindings
+        bindings['%s_widget' % id] = widget
 
 __custom_elements = {}
 def register(name, xml, defaults):
@@ -69,12 +92,13 @@ def realize(master, element, bindings=None):
             for subelement in element:
                 elem_options[subelement.tag] = subelement.text
 
-        bind(element, elem_options, bind_options, bindings)
         if element.tag in __custom_elements:
             widget, pack_options = __custom_elements[element.tag](master, element, bindings)
         else:
             widget_factory = getattr(tk, element.tag.capitalize())
             widget = widget_factory(master, **elem_options)
+        
+        bind(element, widget, bindings)
 
     if is_root:
         return widget, bindings
