@@ -6,38 +6,83 @@ def state_converter(var):
 # CUSTOM COMPONENTS
 ###################
 
-gui.register('input',"""\
-    <group padx="5" pady="5">
-    	<label side='left' padx='5'><text>{label}</text></label>
-        <entry id='{id}' bg='gold' expand='true' state='disabled'/>
-    </group>
-""", defaults=dict(id='', label='label'))
+gui.register('accentcheckbutton', """\
+    <checkbutton id="{id}" text="{text}" style='Secondary.TCheckbutton' />
+""", defaults=dict(id='', text=''))
 
-
+gui.register('switch', """\
+    <checkbutton id='{id}' text='{label}' style='Switch.TCheckbutton' />
+        """, defaults=(dict(id='', label='')))
 # MAIN GUI
+
 ##########
 
 root, bindings = gui.realize_root("""\
-<form>
-    <input id='entry' label='entry:'/>
-    <checkbutton id='enable'><text>enable</text></checkbutton>
-    <group>
-         <button id='ok' text='OK' />
-         <button id='cancel' text='Cancel' />
+<form padx="10" pady="10">
+    <group side="left">
+        <group label="Checkbuttons">
+            <accentcheckbutton id='chk_unchecked' text="Unchecked" padx="5" pady="10"/>
+            <checkbutton id='chk_checked' text="Checked" padx="5" pady="10"/>
+            <checkbutton id='chk_third_state' text="Third State" padx="5" pady="10"/>
+            <checkbutton id='chk_disabled' text="Disabled" state='disabled' padx="5" pady="10"/>
+        </group>
+        <separator />
+        <group label="RadioButtons">
+            <radiobutton id='rdio_unchecked' text="Unchecked" padx="5" pady="10"/>
+            <radiobutton id='rdio_checked' text="Checked" padx="5" pady="10"/>
+            <radiobutton id='rdio_disabled' text="Disabled" state='disabled' padx="5" pady="10"/>
+        </group>
+    </group>
+
+    <group side="left">
+        <entry id="entry" />
+        <spinbox id="spinbox" />
+        <combobox id="combobox" />
+        <combobox state="readonly" />
+        <button text="Button" />
+        <button text="Accent Button" />
+        <switch label='text'/>
     </group>
 </form>
 """)
 
-def on_ok(b):
-    entry = b['entry'].get()
-    checkbutton = b['enable'].get()
-    print("Will Upload Form: [entry=>%s] [checkbutton=>%d]" % (entry, checkbutton))
+bindings['chk_checked'].set(True)
+bindings['chk_third_state'].set(True)
+bindings['chk_third_state_widget'].state(['alternate'])
 
-def on_enable_change(var):
-    bindings['entry_widget'].config(state=state_converter(var))
+bindings['rdio_checked'].set(True)
 
-bindings['on_ok_click'] = on_ok
-bindings['on_enable_change'](on_enable_change)
-bindings['on_cancel_click'] = root.destroy
+bindings['entry'].set('Entry')
+bindings['spinbox_widget'].insert(0, 'Combobox')
 
 root.mainloop()
+
+#class NotifyHandler(object):
+#    def __init__(self):
+#        self.__listeners = []
+#
+#    def on_notify_property_changed(self, property_name):
+#        remove = False
+#        for ref in self.__listeners:
+#            listener = ref()
+#            if listener is not None:
+#                listener(property_name)
+#            else:
+#                remove = True
+#        
+#        # Remove any dead refs
+#        if remove:
+#            self.__listeners[:] = [ref for ref in self.__listeners if ref()]
+#
+#    def register_property_change_listener(self, listener):
+#        self.listeners.append(weakref.ref(listener))
+#
+#class ModelView(NotifyPropertyChange):
+#
+#    @binding
+#    def name(self):
+#        return self.__name
+#
+#    name = Binding()
+
+
