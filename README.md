@@ -6,15 +6,14 @@ discovered automatically (in the style of [Assisticant](https://github.com/micha
 so every label, list and enabled state follows the data on its own.
 
 ```
-python3 demo.py                          # expense tracker
-python3 shell.py                         # shell app: nav pane, pages, back button
-python3-tk9 shell.py --winui             # the same with the WinUI theme (Tk 9)
-python3 -m unittest discover -s tests    # 60 tests, most need no window
+pip install -e .                                 # or just run from the repo
+python3 -m examples.demo                         # expense tracker
+python3 -m examples.shell                        # shell app using every feature
+python3-tk9 -m examples.shell --winui            # the same with the WinUI theme (Tk 9)
+python3 -m unittest discover -s tests -t .       # 102 tests, many need no window
 ```
 
-The library is small enough to read and change (`reactive.py`, `gui.py`,
-`mvvm.py`).
-Fork it and grow the abstractions your own app needs.
+No dependencies beyond the standard library (Python 3.10+, Tk 8.6 or 9).
 
 ## The idea
 
@@ -90,7 +89,7 @@ Every new feature adds another `refresh_*`, and it has to be called from the
 add handler, the delete handler, the edit handlers, the budget spinbox, and
 the filter callbacks. Miss one and the window shows stale data.
 
-**Here** (from [`expenses.py`](expenses.py) and [`demo.py`](demo.py)):
+**Here** (from [`examples/expenses.py`](examples/expenses.py) and [`examples/demo.py`](examples/demo.py)):
 
 ```python
 @computed
@@ -122,7 +121,22 @@ the "left of" text.
 And the logic is testable without a window. [`tests/test_expenses.py`](tests/test_expenses.py)
 exercises the whole demo by setting attributes and reading results.
 
-## Reactive core (`reactive.py`)
+## Package layout
+
+| Module | What's in it | Tk? |
+|---|---|---|
+| `mytkgui.reactive` | observables, computed values, reactions, commands, `ObservableList` | no |
+| `mytkgui.validation` | `Validatable`, `@validator` | no |
+| `mytkgui.tasks` | `@async_command`, `background()`, `sleep()`, the UI-thread `Dispatcher` | no |
+| `mytkgui.mvvm` | `Navigator`, `Messenger`, `CollectionView` | no |
+| `mytkgui.dialogs` | `dialogs` (an IDialogService), `DialogViewModel`, `FakeDialogs` for tests | only `TkDialogs` |
+| `mytkgui.gui` | views: `run`, `create_root`, `realize`, `template`, `register`, `converter`, `resource` | yes |
+| `winui_ttk` | an optional WinUI 3 theme (Tk 9); `mytkgui` never imports it | yes |
+
+View models import from `mytkgui` and never touch Tk, so they're tested
+without a window. `from mytkgui import gui` is everything for views.
+
+## Reactive core
 
 | | |
 |---|---|
@@ -130,7 +144,8 @@ exercises the whole demo by setting attributes and reading results.
 | `@computed` | a cached derived value; lazy, recalculated when an input changes |
 | `@command(can_execute=)` | an action (optionally taking a parameter); bound buttons enable/disable themselves |
 | `RelayCommand(execute, can_execute)` | the same from plain functions, built at runtime |
-| `ObservableList` | a list whose reads are tracked and whose changes notify |
+| `@async_command` | an `async def` action with `is_running`, `error` and `cancel` |
+| `ObservableList` | a list whose reads are tracked; `subscribe()` reports each insert/remove |
 | `watch(getter, callback)`, `autorun(fn)` | side effects that rerun on change |
 | `batch()` | group writes so reactions run once |
 | `untracked()` | read without creating a dependency |
@@ -153,9 +168,6 @@ class ExpensesPage:
     @command(can_execute=lambda self, expense: expense is not None)
     def open(self, expense):
         self.nav.go("expense", expense)
-
-    def __init__(self):
-        self.refresh = RelayCommand(self._reload, lambda: not self.loading)
 ```
 
 ```xml
@@ -163,38 +175,92 @@ class ExpensesPage:
 <button text="Settings" command="{nav.navigate}" command_parameter="settings" />
 ```
 
-Unlike MVVM Light, you rarely call `raise_can_execute_changed()`:
-`can_execute` reads observables, so it updates on its own. Call it only
-when `can_execute` depends on something that isn't observable.
+You rarely call `raise_can_execute_changed()`: `can_execute` reads
+observables, so it updates on its own.
 
-## Shell apps (`mvvm.py`, `<content>`)
+## Background work
 
-A shell swaps pages by changing a view model; the view follows.
+Write the command as `async def`. It runs on the UI thread, so it can read
+and write the view model; `await background(fn)` runs slow work on a
+worker thread and resumes on the UI thread with the result (like `await`
+in a WPF app):
 
-* **`<content content="{nav.current}" />`** shows a view for whatever view
-  model the binding holds, chosen by its type, and swaps views when it
-  changes (WPF's `ContentControl` + `DataTemplate`). Register views with
-  `gui.template(PageViewModel, xml)`. `cache="true"` keeps the 10 most
-  recent views alive (`cache="N"` for N), so a page keeps its scroll
-  position and selection when you come back.
-* **`Navigator(routes)`** holds `current`, `current_route` and a back
-  stack. `go(route, parameter)`, the bindable `navigate` command, and
-  `go_back` (disabled when there's nothing to go back to).
+```python
+@async_command
+async def refresh(self):
+    self.rows = await background(fetch_rows)      # fetch_rows runs on a worker
+```
+
+```xml
+<button text="Refresh" command="{refresh}" />     <!-- disabled while running -->
+<progressbar mode="indeterminate" active="{refresh.is_running}" visible="{refresh.is_running}" />
+<button text="Stop" command="{refresh.cancel}" />
+```
+
+`refresh.error` holds the exception if the last run failed. Worker code
+must not touch observables or Tk; return a value instead. In tests,
+`Dispatcher.current.wait(task)` runs a command to completion without Tk.
+
+## Validation
+
+```python
+class ExpenseForm(Validatable):
+    amount = observable("")
+
+    @validator("amount")
+    def _amount(self, value):
+        if not value.replace(".", "", 1).isdigit():
+            return "Enter an amount, like 12.50."
+```
+
+`form.is_valid`, `form.errors.amount` (shown once the field is edited, or
+after `form.validate()`), `form.all_errors`. A field bound to `{amount}`
+goes into the theme's *invalid* state while it has an error; show the
+message with `<label text="{errors.amount}" visible="{errors.amount|any}" />`.
+
+## Dialogs
+
+```python
+from mytkgui import dialogs
+
+@command
+def delete(self, expense):
+    if dialogs.ask_yes_no("Delete it?", title="Delete"):
+        ...
+```
+
+`info`, `warning`, `error`, `ask_yes_no`, `ask_ok_cancel`,
+`ask_yes_no_cancel`, `open_file(s)`, `save_file`, `choose_directory`, and
+`show(view_model)` for custom modal dialogs: subclass `DialogViewModel`,
+register a view with `gui.template`, bind buttons to `{accept}` and
+`{cancel}`, and `show` returns the result. In tests, set
+`DialogService.current = FakeDialogs(ask_yes_no=False, ...)`.
+
+## Shell apps
+
+* **`<content content="{nav.current}" />`** shows the view registered with
+  `gui.template(PageViewModel, xml)` for the bound view model's type
+  (WPF's ContentControl + DataTemplate). `cache="true"` keeps the 10 most
+  recent views alive so pages keep their state.
+* **`Navigator(routes)`**: `current`, `current_route`, a back stack,
+  `go(route, parameter)`, bindable `navigate` and `go_back`. Pages may
+  define `on_navigated_to(args)` (can be `async def`, to load data),
+  `on_navigated_from(args)`, and `on_navigating_from(args)`, which returns
+  False to stay, e.g. after asking about unsaved changes.
 * **`Messenger`** sends messages between view models that don't know each
-  other, by message type, with optional tokens as channels. Recipients are
-  held weakly. `Messenger.default` is a shared instance.
+  other, by type, with tokens as channels. Recipients are held weakly.
+* **`CollectionView(source, filter=, sort_key=, group_key=)`** filters,
+  sorts and groups a list. `<treeview items="{view}" sort="{view}">` makes
+  the headings sort it.
 
-`shell.py` puts these together: a navigation pane bound to the navigator,
-a back button, list and detail pages (the detail page is opened with a
-command parameter), and a Settings page that turns on dark mode by sending
-a message the shell listens for.
+`examples/shell.py` uses all of these.
 
-## Views (`gui.py`)
+## Views
 
 ```xml
 <form padding="16" theme="{theme}">
   <row>                                  <!-- children left to right -->
-    <entry text="{search}" on_escape="{clear_filters}" />
+    <entry text="{search; delay=250}" on_escape="{clear_filters}" />
     <combobox text="{category_filter}" values="{filter_options}" state="readonly" />
   </row>
   <treeview items="{visible}" selection="{selected}" fill="both" expand="1">
@@ -210,31 +276,88 @@ a message the shell listens for.
 </form>
 ```
 
-* **Bindings:** `{path}`, `{path|converter}`, or text mixed with bindings:
-  `"Total: {total|money}"`. A path walks attributes (`form.amount_text`).
-  `{.}` is the context itself, and `{$root.x}` is the top view model.
-* **Two-way:** `text` on entry, spinbox and combobox; `checked` on
-  checkbutton and switch; `selected` on radiobutton; `value` on scale;
-  `selection` on treeview. Text that doesn't convert (e.g. "abc" in a
-  `number` field) puts the widget in the theme's *invalid* state instead of
-  writing to the model. A field that already means the model's value isn't
-  rewritten, so typing `12.` in a number field doesn't lose the dot.
-* **Any other option** can be bound one-way: `foreground="{status_color}"`.
-* **Converters:** `number`, `int`, `money`, `percent`, `not`, `exists`,
-  `upper`. Add your own with `gui.converter(name, to_view, to_model=None)`.
-* **Commands:** `command="{save}"`, `on_return="{add}"`, `on_delete=...`,
-  with an optional `command_parameter="{...}"`. A bound command disables its
-  widget when `can_execute` is false.
-* **Components:** `gui.register("switch", '<checkbutton style="Switch.TCheckbutton" />')`.
-  `$attr` is substituted from the use site. Attributes the template doesn't
-  use (bindings, layout) pass through to its root element.
-* **Lifetime:** a widget's bindings are disposed when the widget is destroyed.
+**Bindings.** `{path}`, `{path|converter}`, or text mixed with bindings
+(`"Total: {total|money}"`). `{.}` is the context, `{$root.x}` the top view
+model. Options after `;`:
+
+| Option | |
+|---|---|
+| `mode=oneway` / `onetime` | don't write back / read once |
+| `trigger=focus` | write typed text back on focus-out or Return, not every keystroke |
+| `delay=250` | write back once typing pauses (search boxes) |
+| `fallback=—` | shown when the path can't be resolved |
+| `null=(none)` | shown when the value is None |
+
+Two-way: `text` (entry, spinbox, combobox, textarea), `checked`,
+`selected` (radiobutton, tabs), `value` (scale), `selection` (treeview).
+Any other option can be bound one-way. Converters: `number`, `int`,
+`money`, `percent`, `not`, `exists`, `upper`, `count`, `any`; add your own
+with `gui.converter(name, to_view, to_model=None)`.
+
+**Layout.**
+
+| Element | |
+|---|---|
+| `group`, `form`, `row` | stack children vertically / horizontally (`spacing`) |
+| `fields` | label/widget grid; each child's `label` becomes a caption |
+| `grid` | `columns="auto,*,2*,120"` `rows="auto,*"`; children take `row`, `column`, `rowspan`, `columnspan`, `sticky` |
+| `scroll` | a scrolling group (`horizontal="true"` for both directions) |
+| `split` | resizable panes; children take `weight` |
+| `tabs` | `<tab text="..." value="...">` children, or `items="{pages}"` with `<template header="{title}">`; `selected` is two-way |
+| `items` | a view per item of `items="{list}"`, from its `<template>` or the item's type; `columns="3"` for a grid |
+| `content` | the view for the bound view model |
+
+**Attributes on any element.** `visible` and `enabled` (bindings; both
+cascade), `context`, `id`, `command_parameter`, `on_return`/`on_escape`/
+`on_delete`/`on_double_click`/`on_<Event>`, `focus` ("true" or a binding),
+`tab_index`, `default`/`cancel` (buttons that Return/Escape press), and
+pack options (`side`, `fill`, `expand`, `anchor`, `padx`, `pady`).
+
+**Keyboard and menus.**
+
+```xml
+<shortcut key="Ctrl+S" command="{save}" />
+<menubar>
+  <menu label="File">
+    <item label="Save" command="{save}" shortcut="Ctrl+S" />
+    <separator />
+    <check label="Dark mode" checked="{dark}" />
+  </menu>
+</menubar>
+<treeview ...>
+  <contextmenu><item label="Delete" command="{delete}" command_parameter="{selected}" /></contextmenu>
+</treeview>
+```
+
+Shortcuts belong to the view they're in: a page's shortcuts only work
+while that page is shown. On macOS, Ctrl means Command.
+
+**Styles and resources.**
+
+```xml
+<style name="Danger.TButton" foreground="{@danger}" map_foreground="disabled:#999" />
+<resource name="gap" value="12" />
+<group spacing="{@gap}"> ... </group>
+```
+
+`gui.resource("danger", "#c42b1c")` registers app-wide resources.
+
+**Components.** `gui.register("switch", '<checkbutton style="Switch.TCheckbutton" />')`.
+`$attr` is substituted from the use site; other attributes pass through.
+
+**Errors.** A binding that can't be evaluated is reported once with the
+element and view line: `{nmae} on <label text="{nmae}">, view line 12:
+Thing has no attribute 'nmae'`. Call `gui.strict_bindings()` in tests to
+raise instead.
+
+**Lifetime.** A widget's bindings, traces and shortcuts are removed when
+the widget is destroyed, and a destroyed view frees its view model.
 
 ## Themes
 
 Widgets use the platform's own ttk theme: Windows' native look on
 Windows, Aqua on macOS, and `clam` on Linux, which has no native one.
-`gui.py` depends on no theme.
+`mytkgui` depends on no theme.
 
 To use another theme, pass it to `create_root` or `run`:
 
@@ -270,9 +393,14 @@ either way. Both demos take `--winui` (see `winui_ttk/README.md`).
 
 ## Not done yet
 
-* Item templates (rendering arbitrary widgets per list item). Treeview is
-  the only list widget so far.
-* Per-item list change events. Treeview diffs rows itself, which is fine
-  for hundreds of rows but not for many thousands.
-* Background threads. Tk isn't thread-safe; marshal changes onto the UI
-  thread (e.g. `root.after`) before writing to the view model.
+* **Not run on Windows or macOS yet.** Everything here was built and tested
+  on Linux. The Windows-specific parts (DPI detection, native dialogs and
+  menus) need a run there.
+* **Lists re-diff on change.** `<items>` and `<treeview>` reconcile the
+  whole list (by identity) on each change. That's fine for a few thousand
+  items. `ObservableList.subscribe()` reports single inserts and removes
+  for anything that needs to do better.
+* **Async commands await `background()`, `sleep()` and other tasks**, not
+  asyncio coroutines. Wrap asyncio code in `background(asyncio.run, coro())`.
+* **No animations or transitions**; ttk can't do them well.
+* **Accessibility** is whatever Tk provides, which is little.

@@ -6,7 +6,7 @@ Nothing below says *when* anything updates -- dependencies are discovered
 automatically.
 """
 
-from reactive import ObservableList, command, computed, observable
+from mytkgui import ObservableList, command, computed, observable
 
 CATEGORIES = ["Food", "Travel", "Housing", "Fun", "Other"]
 

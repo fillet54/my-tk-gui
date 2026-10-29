@@ -32,14 +32,18 @@ Class-level sugar::
             return f"{self.first} {self.last}".strip()
 """
 
+from __future__ import annotations
+
 import functools
 import inspect
 import threading
+from collections import namedtuple
 from collections.abc import MutableSequence
 from contextlib import contextmanager
+from typing import Any, Callable, Iterable, Iterator
 
 __all__ = [
-    "Observable", "Computed", "Reaction", "ObservableList",
+    "Observable", "Computed", "Reaction", "ObservableList", "ListChange",
     "observable", "computed", "command", "Command", "RelayCommand", "BoundCommand", "autorun", "watch",
     "batch", "untracked", "CycleError",
 ]
@@ -81,14 +85,14 @@ def _tracking(frame):
 
 
 @contextmanager
-def untracked():
+def untracked() -> Iterator[None]:
     """Read values without recording dependencies."""
     with _tracking(None):
         yield
 
 
 @contextmanager
-def batch():
+def batch() -> Iterator[None]:
     """Group several writes so reactions run once, after the last one."""
     _state.batch_depth += 1
     try:
@@ -178,11 +182,11 @@ class Observable(_Source):
         self._value = value
         self.name = name
 
-    def get(self):
+    def get(self) -> Any:
         self._depend()
         return self._value
 
-    def set(self, value):
+    def set(self, value: Any) -> None:
         if _same(self._value, value):
             return
         self._value = value
@@ -209,7 +213,7 @@ class Computed(_Source, _Dependent):
         self._sources = set()
         self.name = name or getattr(fn, "__qualname__", None)
 
-    def get(self):
+    def get(self) -> Any:
         if self._computing:
             raise CycleError("computed %r depends on itself" % self.name)
         self._depend()
@@ -287,16 +291,16 @@ class Reaction(_Dependent):
             return
         self._run_tracked(self._fn)
 
-    def dispose(self):
+    def dispose(self) -> None:
         self._disposed = True
         self._unsubscribe()
 
     @property
-    def disposed(self):
+    def disposed(self) -> bool:
         return self._disposed
 
 
-def autorun(fn, scheduler=None):
+def autorun(fn: Callable[[], Any], scheduler: Callable | None = None) -> "Reaction":
     """Run ``fn`` now and whenever anything it reads changes."""
     return Reaction(fn, scheduler)
 
@@ -304,7 +308,8 @@ def autorun(fn, scheduler=None):
 _MISSING = object()
 
 
-def watch(getter, callback, scheduler=None, fire_immediately=True):
+def watch(getter: Callable[[], Any], callback: Callable[[Any], Any], scheduler: Callable | None = None,
+          fire_immediately: bool = True) -> "Reaction":
     """Call ``callback(value)`` whenever ``getter()`` produces a new value.
 
     Only ``getter`` is tracked; ``callback`` runs untracked, so writing to
@@ -442,13 +447,13 @@ class Command:
     isn't observable. Calling the command is the same as ``execute``.
     """
 
-    def execute(self, parameter=None):
+    def execute(self, parameter: Any = None) -> Any:
         raise NotImplementedError
 
-    def can_execute(self, parameter=None):
+    def can_execute(self, parameter: Any = None) -> bool:
         return True
 
-    def raise_can_execute_changed(self):
+    def raise_can_execute_changed(self) -> None:
         pass
 
     def __call__(self, parameter=None):
@@ -464,24 +469,25 @@ class RelayCommand(Command):
     Either function may take the command parameter or not.
     """
 
-    def __init__(self, execute, can_execute=None, name=None):
+    def __init__(self, execute: Callable[..., Any], can_execute: Callable[..., bool] | None = None,
+                 name: str | None = None) -> None:
         self._execute = execute
         self._check = can_execute
         self._version = Observable(0)
         self.name = name or getattr(execute, "__name__", "command")
 
-    def can_execute(self, parameter=None):
+    def can_execute(self, parameter: Any = None) -> bool:
         self._version.get()
         if self._check is None:
             return True
         return bool(_call(self._check, (), parameter))
 
-    def execute(self, parameter=None):
+    def execute(self, parameter: Any = None) -> Any:
         with batch():
             if self.can_execute(parameter):
                 return _call(self._execute, (), parameter)
 
-    def raise_can_execute_changed(self):
+    def raise_can_execute_changed(self) -> None:
         with untracked():
             self._version.set(self._version.get() + 1)
 
@@ -505,15 +511,15 @@ class BoundCommand(Command):
         self._instance = instance
         self._command = command
 
-    def execute(self, parameter=None):
+    def execute(self, parameter: Any = None) -> Any:
         with batch():
             if self.can_execute(parameter):
                 return _call(self._command._fn, (self._instance,), parameter)
 
-    def can_execute(self, parameter=None):
+    def can_execute(self, parameter: Any = None) -> bool:
         return self._command._can_execute(self._instance, parameter)
 
-    def raise_can_execute_changed(self):
+    def raise_can_execute_changed(self) -> None:
         version = self._command._version(self._instance)
         with untracked():
             version.set(version.get() + 1)
@@ -573,7 +579,7 @@ class _CommandDescriptor:
         return BoundCommand(instance, self)
 
 
-def command(fn=None, *, can_execute=None):
+def command(fn: Callable | None = None, *, can_execute: Any = None) -> Any:
     """Declares a view model action (a ``Command``).
 
     The method may take a parameter (``command_parameter`` in a view, or
@@ -599,17 +605,35 @@ def command(fn=None, *, can_execute=None):
 # Collections
 # --------------------------------------------------------------------------
 
+class ListChange(namedtuple("ListChange", "action index items")):
+    """One change to an ObservableList: ``action`` is "insert", "remove",
+    "replace" (``items`` at ``index`` replaced) or "reset" (anything else)."""
+
+
 class ObservableList(MutableSequence):
     """A list whose reads are tracked and whose mutations notify.
 
     Any read depends on the whole list, and any mutation invalidates every
-    reader. Per-item change events (for efficient Treeview updates) can be
-    added on top later without changing this contract.
+    reader. ``subscribe(callback)`` also reports each change as a
+    ``ListChange``, for views that update item by item.
     """
 
     def __init__(self, iterable=()):
         self._items = list(iterable)
         self._source = _Source()
+        self._listeners = []
+
+    def subscribe(self, callback: Callable[["ListChange"], Any]) -> Callable[[], None]:
+        """Call ``callback(change)`` after each change; returns an unsubscribe function."""
+        self._listeners.append(callback)
+        return lambda: self._listeners.remove(callback) if callback in self._listeners else None
+
+    def _notify(self, action, index, items):
+        self._source._changed()
+        if self._listeners:
+            change = ListChange(action, index, tuple(items))
+            for callback in list(self._listeners):
+                callback(change)
 
     # reads
     def __len__(self):
@@ -641,41 +665,53 @@ class ObservableList(MutableSequence):
 
     # writes
     def __setitem__(self, index, value):
+        if isinstance(index, slice):
+            self._items[index] = value
+            self._notify("reset", 0, self._items)
+            return
+        index = range(len(self._items))[index]
         self._items[index] = value
-        self._source._changed()
+        self._notify("replace", index, (value,))
 
     def __delitem__(self, index):
-        del self._items[index]
-        self._source._changed()
+        if isinstance(index, slice):
+            del self._items[index]
+            self._notify("reset", 0, self._items)
+            return
+        index = range(len(self._items))[index]
+        item = self._items.pop(index)
+        self._notify("remove", index, (item,))
 
     def insert(self, index, value):
+        index = max(0, min(len(self._items), index if index >= 0 else len(self._items) + index))
         self._items.insert(index, value)
-        self._source._changed()
+        self._notify("insert", index, (value,))
 
     def append(self, value):
         self._items.append(value)
-        self._source._changed()
+        self._notify("insert", len(self._items) - 1, (value,))
 
     def extend(self, values):
         values = list(values)
         if values:
+            start = len(self._items)
             self._items.extend(values)
-            self._source._changed()
+            self._notify("insert", start, values)
 
     def clear(self):
         if self._items:
             self._items.clear()
-            self._source._changed()
+            self._notify("reset", 0, ())
 
     def sort(self, *, key=None, reverse=False):
         self._items.sort(key=key, reverse=reverse)
-        self._source._changed()
+        self._notify("reset", 0, self._items)
 
     def reverse(self):
         self._items.reverse()
-        self._source._changed()
+        self._notify("reset", 0, self._items)
 
-    def replace(self, iterable):
+    def replace(self, iterable: Iterable[Any]) -> None:
         """Swap in new contents with a single notification."""
         self._items[:] = list(iterable)
-        self._source._changed()
+        self._notify("reset", 0, self._items)

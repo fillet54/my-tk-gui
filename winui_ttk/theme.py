@@ -272,7 +272,9 @@ class Theme:
 
         # LabelFrame: the title above a card. Frames take padding only from
         # the widget option, so it is defaulted for the class.
-        style.configure("TLabelframe", background=surface, labeloutside=True,
+        # The widget's own background shows around the card (beside the
+        # title), so it is the window color; the border image is the card.
+        style.configure("TLabelframe", background=base, labeloutside=True,
                         labelmargins=px(0, 0, 0, tokens.METRICS["LabelFrameHeaderGap"]))
         style.configure("TLabelframe.Label", background=base, foreground=primary, font="WinUI.BodyStrong")
         style.map("TLabelframe.Label", foreground=[("disabled", disabled)])

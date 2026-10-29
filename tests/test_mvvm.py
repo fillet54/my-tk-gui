@@ -3,8 +3,8 @@
 import gc
 import unittest
 
-from mvvm import Messenger, Navigator
-from reactive import RelayCommand, autorun, command, computed, observable
+from mytkgui import Messenger, Navigator
+from mytkgui import RelayCommand, autorun, command, computed, observable
 
 
 class Editor:

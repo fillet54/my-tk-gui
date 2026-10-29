@@ -6,14 +6,14 @@ There is no event-handling code in this file. Try:
   * searching / filtering -- the count and filtered total update
   * the dark mode switch (with --winui)
 
-    python3 demo.py            # the platform's own look
-    python3 demo.py --winui    # the optional WinUI theme (needs Tk 9)
+    python3 -m examples.demo            # the platform's own look
+    python3 -m examples.demo --winui    # the optional WinUI theme (needs Tk 9)
 """
 
 import sys
 
-import gui
-from expenses import sample
+from mytkgui import gui
+from .expenses import sample
 
 
 def theme_option():

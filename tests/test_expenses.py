@@ -2,7 +2,7 @@
 
 import unittest
 
-from expenses import Expense, ExpensesViewModel, sample
+from examples.expenses import Expense, ExpensesViewModel, sample
 
 
 class TestNewExpenseForm(unittest.TestCase):

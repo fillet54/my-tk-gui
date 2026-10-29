@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mytkgui"
+version = "0.2.0"
+description = "Reactive MVVM for tkinter: XML views bound to plain-Python view models"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Phillip Gomez" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: User Interfaces",
+    "Environment :: X11 Applications",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: MacOS X",
+]
+dependencies = []
+
+[project.urls]
+Source = "https://github.com/fillet54/my-tk-gui"
+
+[tool.setuptools]
+# winui_ttk is an optional theme (needs Tk 9); mytkgui never imports it.
+packages = ["mytkgui", "winui_ttk"]
+
+[tool.setuptools.package-data]
+winui_ttk = ["build-python-tk9.sh", "README.md"]
+mytkgui = ["py.typed"]

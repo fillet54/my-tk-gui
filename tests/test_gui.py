@@ -3,10 +3,11 @@
 import tkinter as tk
 import unittest
 
-import demo
-import gui
-from expenses import sample
-from reactive import command, computed, observable
+from examples import demo
+from mytkgui import gui
+from mytkgui import views
+from examples.expenses import sample
+from mytkgui import command, computed, observable
 
 try:
     _root = tk.Tk()
@@ -186,7 +187,7 @@ class TestBindings(GuiTestCase):
         vm = Counter()
         view = self.build('<group><label text="{count}" /></group>', vm)
         label = find(self.root, "TLabel")[0]
-        reactions = list(label._reactions)
+        reactions = [d.__self__ for d in label._reactions]
         view.destroy()
         self.assertTrue(all(r.disposed for r in reactions))
         vm.count = 5   # must not touch the dead widget
@@ -280,7 +281,7 @@ class TestContentAndParameters(GuiTestCase):
 
 class TestShellDemo(GuiTestCase):
     def test_navigation(self):
-        import shell
+        from examples import shell
         vm = shell.Shell(sample())
         self.build(shell.SHELL, vm)
         nav_items = find(self.root, "TRadiobutton")
@@ -303,10 +304,10 @@ class TestShellDemo(GuiTestCase):
 
 class TestPx(unittest.TestCase):
     def test_px(self):
-        self.assertEqual(gui._px("16", 2), 32)
-        self.assertEqual(gui._px("12 0", 2), (24, 0))
-        self.assertEqual(gui._px("3", 1.25), 4)
-        self.assertEqual(gui._px("5p", 2), "5p")       # Tk units scale themselves
+        self.assertEqual(views._px("16", 2), 32)
+        self.assertEqual(views._px("12 0", 2), (24, 0))
+        self.assertEqual(views._px("3", 1.25), 4)
+        self.assertEqual(views._px("5p", 2), "5p")       # Tk units scale themselves
 
     def test_override(self):
         import os

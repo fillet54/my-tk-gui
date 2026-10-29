@@ -244,7 +244,7 @@ class TestMoreControls(unittest.TestCase):
         box.pack()
         self.show()
         rest = str(box.text.cget("background"))
-        box.text.focus_force()
+        box.text.event_generate("<FocusIn>")      # independent of the window manager
         self.root.update()
         self.assertTrue(box.instate(["focus"]))
         self.assertNotEqual(str(box.text.cget("background")), rest)

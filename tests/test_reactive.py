@@ -2,7 +2,7 @@ import gc
 import unittest
 import weakref
 
-from reactive import (
+from mytkgui.reactive import (
     Computed, CycleError, Observable, ObservableList, autorun, batch,
     computed, observable, untracked, watch,
 )
