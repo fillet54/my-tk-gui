@@ -239,6 +239,10 @@ METRICS = {
     "ListViewItemHeight": 40,
     "TabHeight": 32,
     "CardPadding": 16,
+    "NumberBoxSpinButton": 30,
+    "DropDownGap": 8,
+    "TreeViewIndent": 24,
+    "LabelFrameHeaderGap": 8,
 }
 
 # (size px, semibold)

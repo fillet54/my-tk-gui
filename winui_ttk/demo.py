@@ -9,7 +9,7 @@ import random
 import tkinter as tk
 from tkinter import colorchooser, ttk
 
-from . import WINDOWS_ACCENTS, create_root, tokens
+from . import WINDOWS_ACCENTS, TextBox, create_root, tokens
 from .svg import Svg, rrect
 
 
@@ -31,11 +31,13 @@ class Gallery:
         tabs = ttk.Notebook(outer)
         tabs.pack(fill="both", expand=True, pady=(self.px(20), 0))
         tabs.add(self._controls_page(tabs), text="Controls")
+        tabs.add(self._more_page(tabs), text="More controls")
         tabs.add(self._list_page(tabs), text="ListView")
         tabs.add(self._typography_page(tabs), text="Typography")
 
         theme.on_change(lambda t: self._update_status())
         self._update_status()
+        self._menus()
 
     def var(self, kind, value):
         # Tk variables are deleted when Python collects them; keep them alive.
@@ -60,8 +62,37 @@ class Gallery:
 
         self.dark = tk.BooleanVar(value=False)
         ttk.Checkbutton(row, text="Dark theme", style="Switch.TCheckbutton", variable=self.dark,
-                        command=lambda: self.theme.set_mode("dark" if self.dark.get() else "light")
-                        ).pack(side="right", anchor="n")
+                        command=self._apply_mode).pack(side="right", anchor="n")
+
+    def _apply_mode(self):
+        self.theme.set_mode("dark" if self.dark.get() else "light")
+
+    def _menus(self):
+        """A menu bar and a right-click menu (classic Tk menus, themed colors)."""
+        bar = tk.Menu(self.root)
+        file = tk.Menu(bar)
+        file.add_command(label="New", accelerator="Ctrl+N")
+        file.add_command(label="Open…", accelerator="Ctrl+O")
+        file.add_command(label="Save", state="disabled")
+        file.add_separator()
+        file.add_command(label="Exit", command=self.root.destroy)
+        view = tk.Menu(bar)
+        view.add_checkbutton(label="Dark theme", variable=self.dark, command=self._apply_mode)
+        accents = tk.Menu(view)
+        for name, color in (("Blue", "#0078D4"), ("Pink", "#E3008C"), ("Green", "#107C10"),
+                            ("Orange", "#F7630C")):
+            accents.add_command(label=name, command=lambda c=color: self.theme.set_accent(c))
+        view.add_cascade(label="Accent", menu=accents)
+        bar.add_cascade(label="File", menu=file)
+        bar.add_cascade(label="View", menu=view)
+        self.root.configure(menu=bar)
+
+        context = tk.Menu(self.root)
+        for label in ("Cut", "Copy", "Paste"):
+            context.add_command(label=label)
+        context.add_separator()
+        context.add_checkbutton(label="Dark theme", variable=self.dark, command=self._apply_mode)
+        self.root.bind_all("<Button-3>", lambda e: context.tk_popup(e.x_root, e.y_root), add="+")
 
     def _update_status(self):
         t = self.theme
@@ -197,12 +228,101 @@ class Gallery:
         disabled.pack(fill="x", pady=(gap * 2, 0))
         return page
 
+    def _more_page(self, notebook):
+        page = ttk.Frame(notebook, padding=self.px(12))
+        for c in range(3):
+            page.columnconfigure(c, weight=1, uniform="cards")
+        gap = self.px(8)
+
+        # NumberBox (Spinbox) + DropDownButton (Menubutton)
+        body = self._card(page, "NumberBox & DropDownButton", 0, 0, "Spinbox and Menubutton")
+        number = ttk.Spinbox(body, from_=0, to=100, increment=5)
+        number.set(25)
+        number.pack(fill="x")
+        off = ttk.Spinbox(body, from_=0, to=10)
+        off.set(3)
+        off.state(["disabled"])
+        off.pack(fill="x", pady=gap)
+        size = self.var(tk.StringVar, "Medium")
+        drop = ttk.Menubutton(body, text="Size: Medium")
+        menu = tk.Menu(drop)
+        for option in ("Small", "Medium", "Large"):
+            menu.add_radiobutton(label=option, value=option, variable=size,
+                                 command=lambda: drop.configure(text="Size: " + size.get()))
+        drop.configure(menu=menu)
+        drop.pack(anchor="w")
+
+        # ToggleButton + toolbar buttons
+        body = self._card(page, "ToggleButton & toolbar", 0, 1, "Toggle.TButton and Toolbutton")
+        ttk.Checkbutton(body, text="Toggle button", style="Toggle.TButton",
+                        variable=self.var(tk.BooleanVar, True)).pack(anchor="w")
+        ttk.Checkbutton(body, text="Off", style="Toggle.TButton",
+                        variable=self.var(tk.BooleanVar, False)).pack(anchor="w", pady=gap)
+        bar = ttk.Frame(body)
+        bar.pack(anchor="w")
+        for text, on in (("Bold", True), ("Italic", False)):
+            ttk.Checkbutton(bar, text=text, style="Toolbutton",
+                            variable=self.var(tk.BooleanVar, on)).pack(side="left")
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=gap)
+        ttk.Button(bar, text="Cut", style="Toolbutton").pack(side="left")
+        ttk.Button(bar, text="Undo", style="Toolbutton", state="disabled").pack(side="left")
+
+        # Vertical Slider + ProgressBar, separators
+        body = self._card(page, "Vertical & Separator", 0, 2, "Vertical Scale, Progressbar, Separator")
+        row = ttk.Frame(body)
+        row.pack(fill="x")
+        level = self.var(tk.DoubleVar, 60)
+        ttk.Scale(row, from_=100, to=0, orient="vertical", variable=level, length=self.px(120)).pack(side="left")
+        ttk.Progressbar(row, orient="vertical", variable=level, maximum=100,
+                        length=self.px(120)).pack(side="left", padx=self.px(16))
+        ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=self.px(8))
+        ttk.Label(row, text="Drag the slider", style="Secondary.TLabel").pack(side="left", anchor="n")
+        ttk.Separator(body).pack(fill="x", pady=gap)
+        ttk.Label(body, text="A horizontal Separator above", style="Secondary.TLabel").pack(anchor="w")
+
+        # LabelFrame: a titled card
+        group = ttk.Labelframe(page, text="Shipping address (LabelFrame)")
+        group.grid(row=1, column=0, sticky="nsew", padx=self.px(8), pady=self.px(8))
+        for label, value in (("Street", "1 Microsoft Way"), ("City", "Redmond")):
+            ttk.Label(group, text=label).pack(anchor="w")
+            field = ttk.Entry(group)
+            field.insert(0, value)
+            field.pack(fill="x", pady=(0, gap))
+
+        # Multi-line TextBox (tk.Text inside the TextBox border)
+        body = self._card(page, "TextBox (multi-line)", 1, 1, "winui_ttk.TextBox wraps tk.Text")
+        box = TextBox(body, height=5, wrap="word")
+        box.text.insert("end", "Multi-line text. Click to see the accent underline; "
+                               "right-click anywhere for a context menu.")
+        box.pack(fill="both", expand=True)
+
+        # Listbox
+        body = self._card(page, "Listbox", 1, 2, "Classic tk.Listbox, themed colors")
+        lb = tk.Listbox(body, height=5)
+        for name in ("Inbox", "Drafts", "Sent", "Archive", "Junk", "Deleted"):
+            lb.insert("end", name)
+        lb.selection_set(1)
+        lb.pack(fill="both", expand=True)
+        return page
+
     def _list_page(self, notebook):
         page = ttk.Frame(notebook, padding=self.px(16))
         page.rowconfigure(1, weight=1)
-        page.columnconfigure(0, weight=1)
-        ttk.Label(page, text="ListView with a ScrollBar — hover the scrollbar to expand it",
-                  style="Secondary.TLabel").grid(row=0, column=0, sticky="w", pady=(0, self.px(8)))
+        page.columnconfigure(1, weight=1)
+        ttk.Label(page, text="TreeView, and a ListView with a ScrollBar — hover the scrollbar to expand it",
+                  style="Secondary.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, self.px(8)))
+        folders = ttk.Treeview(page, show="tree", selectmode="browse")
+        folders.column("#0", width=self.px(240))
+        for top, children in (("Documents", ("Budgets", "Reports", "Archive")),
+                              ("Pictures", ("Holiday", "Screenshots")), ("Music", ())):
+            node = folders.insert("", "end", text=top, open=top == "Documents")
+            for child in children:
+                sub = folders.insert(node, "end", text=child)
+                if child == "Reports":
+                    for leaf in ("2025", "2026"):
+                        folders.insert(sub, "end", text=leaf)
+        folders.selection_set(folders.get_children(folders.get_children()[0])[1])
+        folders.grid(row=1, column=0, sticky="nsew", padx=(0, self.px(12)))
         tree = ttk.Treeview(page, columns=("name", "kind", "size", "modified"), show="headings")
         for key, title, width, anchor in (("name", "Name", 280, "w"), ("kind", "Type", 140, "w"),
                                           ("size", "Size", 100, "e"), ("modified", "Modified", 160, "w")):
@@ -220,8 +340,8 @@ class Gallery:
         tree.selection_set(tree.get_children()[2])
         bar = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=bar.set)
-        tree.grid(row=1, column=0, sticky="nsew")
-        bar.grid(row=1, column=1, sticky="ns")
+        tree.grid(row=1, column=1, sticky="nsew")
+        bar.grid(row=1, column=2, sticky="ns")
         return page
 
     def _typography_page(self, notebook):

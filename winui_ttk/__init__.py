@@ -15,6 +15,7 @@ any scale, including 125%, 150% and 175%.
 
 from .theme import Theme, create_root, detect_scale, enable_dpi_awareness
 from .tokens import DEFAULT_ACCENT, WINDOWS_ACCENTS, accent_palette
+from .widgets import TextBox, theme_of
 
 __all__ = ["Theme", "create_root", "detect_scale", "enable_dpi_awareness",
-           "DEFAULT_ACCENT", "WINDOWS_ACCENTS", "accent_palette"]
+           "DEFAULT_ACCENT", "WINDOWS_ACCENTS", "accent_palette", "TextBox", "theme_of"]

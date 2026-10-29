@@ -14,12 +14,17 @@ from .elements import Colors, stroke
 from .tokens import TYPE_RAMP, to_hex
 
 # Containers whose children sit on the card surface instead of the window.
-SURFACE_CLASSES = ("Card", "TNotebook")
+SURFACE_CLASSES = ("Card", "TNotebook", "TLabelframe")
 
 # ttk classes that get moved onto "Surface.<style>" inside those containers.
 _THEMED_CLASSES = ("TFrame", "TLabel", "TButton", "TCheckbutton", "TRadiobutton",
                    "TEntry", "TCombobox", "TScale", "TProgressbar", "TScrollbar",
-                   "Treeview", "TSeparator", "TSpinbox", "TNotebook", "Card")
+                   "Treeview", "TSeparator", "TSpinbox", "TNotebook", "Card",
+                   "TLabelframe", "TMenubutton")
+
+# Classic Tk widgets whose colors follow the theme: (class, option) -> how
+# to color it on the window and on a card (see Theme._classic_colors).
+_CLASSIC_CLASSES = ("Toplevel", "Frame", "Label", "Canvas", "Text", "Listbox", "Menu")
 
 
 class Theme:
@@ -45,6 +50,7 @@ class Theme:
         self._surface_styles = set()
         self._element_names = set()
         self._listeners = []
+        self._classic = {}          # class -> {option: (on window, on card)}
         self.fonts = {}
         self.last_render_ms = 0.0
 
@@ -56,6 +62,7 @@ class Theme:
         self._create_theme()
         self._configure()
         self._install_surface_hook()
+        root._winui_theme = self
 
     # -- public ---------------------------------------------------------------
 
@@ -82,6 +89,11 @@ class Theme:
     def on_change(self, callback):
         """Call ``callback(theme)`` after every mode/accent change."""
         self._listeners.append(callback)
+        return callback
+
+    def remove_listener(self, callback):
+        if callback in self._listeners:
+            self._listeners.remove(callback)
 
     def font(self, name="Body"):
         return "WinUI.%s" % name
@@ -114,7 +126,7 @@ class Theme:
         self.colors = self._resolve()
         self._paint_all()
         self._configure()
-        for callback in self._listeners:
+        for callback in list(self._listeners):
             callback(self)
 
     # -- theme structure (scale-dependent, built once) ---------------------------
@@ -159,11 +171,31 @@ class Theme:
             ("Combobox.downarrow", {"side": "right", "sticky": "ns"}),
             ("Combobox.padding", {"sticky": "nsew", "children": [
                 ("Combobox.textarea", {"sticky": "nsew"})]})]})])
-        style.layout("Horizontal.TScale", [("Scale.padding", {"sticky": "nsew", "children": [
-            ("Horizontal.Scale.trough", {"sticky": "ew", "children": [
-                ("Horizontal.Scale.slider", {"side": "left", "sticky": ""})]})]})])
-        style.layout("Horizontal.TProgressbar", [("Horizontal.Progressbar.trough", {"sticky": "ew", "children": [
-            ("Horizontal.Progressbar.pbar", {"side": "left", "sticky": "ns"})]})])
+        for orient, along, start, across in (("Horizontal", "ew", "left", "ns"), ("Vertical", "ns", "top", "we")):
+            style.layout("%s.TScale" % orient, [("Scale.padding", {"sticky": "nsew", "children": [
+                ("%s.Scale.trough" % orient, {"sticky": along, "children": [
+                    ("%s.Scale.slider" % orient, {"side": start, "sticky": ""})]})]})])
+            # A vertical progressbar fills from the bottom.
+            style.layout("%s.TProgressbar" % orient, [("%s.Progressbar.trough" % orient, {"sticky": along, "children": [
+                ("%s.Progressbar.pbar" % orient, {"side": "bottom" if orient == "Vertical" else start,
+                                                  "sticky": across})]})])
+            style.layout("%s.TSeparator" % orient, [("%s.Separator.separator" % orient, {"sticky": along})])
+        style.layout("Toggle.TButton", [("ToggleButton.border", {"sticky": "nsew", "children": [
+            ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
+        style.layout("Toolbutton", [("Toolbutton.border", {"sticky": "nsew", "children": [
+            ("Toolbutton.padding", {"sticky": "nsew", "children": [("Toolbutton.label", {"sticky": "nsew"})]})]})])
+        style.layout("TMenubutton", [("Button.border", {"sticky": "nsew", "children": [
+            ("Menubutton.padding", {"sticky": "nsew", "children": [
+                ("Menubutton.indicator", {"side": "right", "sticky": ""}),
+                ("Menubutton.label", {"side": "left", "sticky": ""})]})]})])
+        # NumberBox: up and down buttons inline at the right, up first.
+        style.layout("TSpinbox", [("Spinbox.field", {"sticky": "nsew", "children": [
+            ("Spinbox.downarrow", {"side": "right", "sticky": ""}),
+            ("Spinbox.uparrow", {"side": "right", "sticky": ""}),
+            ("Spinbox.padding", {"sticky": "nsew", "children": [
+                ("Spinbox.textarea", {"sticky": "nsew"})]})]})])
+        style.layout("TLabelframe", [("Labelframe.border", {"sticky": "nsew"})])
+        style.layout("TextBox.TFrame", [("Entry.field", {"sticky": "nsew"})])   # widgets.TextBox
         style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
             ("Vertical.Scrollbar.uparrow", {"side": "top", "sticky": ""}),
             ("Vertical.Scrollbar.downarrow", {"side": "bottom", "sticky": ""}),
@@ -175,6 +207,10 @@ class Theme:
         style.layout("Treeview", [("Treeview.padding", {"sticky": "nsew", "children": [
             ("Treeview.treearea", {"sticky": "nsew"})]})])
         style.layout("Treeview.Row", [("Treeitem.row", {"sticky": "nsew"})])
+        style.layout("Treeview.Item", [("Treeitem.padding", {"sticky": "nsew", "children": [
+            ("Treeitem.indicator", {"side": "left", "sticky": ""}),
+            ("Treeitem.image", {"side": "left", "sticky": ""}),
+            ("Treeitem.text", {"sticky": "nsew"})]})])
         style.layout("TNotebook", [("Notebook.client", {"sticky": "nsew"})])
         style.layout("TNotebook.Tab", [("Notebook.tab", {"sticky": "nsew", "children": [
             ("Notebook.padding", {"side": "top", "sticky": "nsew", "children": [
@@ -220,18 +256,47 @@ class Theme:
                   selectforeground=[("readonly", primary)],
                   fieldbackground=[("readonly", hexc("ControlFillColorDefault"))])
 
+        on_accent = hexc("TextOnAccentFillColorPrimary", accent_fill)
+        on_accent_disabled = hexc("TextOnAccentFillColorDisabled", c.on("AccentFillColorDisabled"))
+        style.map("Toggle.TButton", foreground=[("disabled", "selected", on_accent_disabled),
+                                                ("selected", on_accent), ("disabled", disabled),
+                                                ("pressed", secondary)])
+        style.configure("Toolbutton", padding=px(11, 6, 11, 7), anchor="center", foreground=primary)
+        style.map("Toolbutton", foreground=[("disabled", "selected", on_accent_disabled),
+                                            ("selected", on_accent), ("disabled", disabled),
+                                            ("pressed", secondary)])
+        style.configure("TMenubutton", padding=px(12, 6, 12, 7), foreground=primary)
+        style.map("TMenubutton", foreground=[("disabled", disabled), ("pressed", secondary)])
+        style.configure("TSpinbox", padding=px(11, 6, 0, 7), foreground=primary, arrowsize=round(12 * s))
+        style.map("TSpinbox", foreground=[("disabled", disabled)])
+
+        # LabelFrame: the title above a card. Frames take padding only from
+        # the widget option, so it is defaulted for the class.
+        style.configure("TLabelframe", background=surface, labeloutside=True,
+                        labelmargins=px(0, 0, 0, tokens.METRICS["LabelFrameHeaderGap"]))
+        style.configure("TLabelframe.Label", background=base, foreground=primary, font="WinUI.BodyStrong")
+        style.map("TLabelframe.Label", foreground=[("disabled", disabled)])
+        self.root.option_add("*TLabelframe.padding", round(tokens.METRICS["CardPadding"] * s), "widgetDefault")
+
         for cls in ("TCheckbutton", "TRadiobutton", "Switch.TCheckbutton"):
             style.configure(cls, padding=px(0, 6, 0, 6), foreground=primary)
             style.map(cls, foreground=[("disabled", disabled)])
 
         style.configure("Horizontal.TScale", padding=px(0, 6, 0, 6))
+        style.configure("Vertical.TScale", padding=px(6, 0, 6, 0))
         style.configure("Treeview", rowheight=elements.row_height(s), font="WinUI.Body",
+                        indent=elements.tree_indent(s),
                         foreground=primary, background=base, fieldbackground=base, borderwidth=0)
         style.map("Treeview", foreground=[("selected", primary)], background=[("selected", base)])
         style.configure("Treeview.Heading", font="WinUI.Caption", foreground=secondary,
                         background=base, padding=px(12, 8, 12, 8), relief="flat", borderwidth=0)
         style.map("Treeview.Heading", background=[("active", base)], foreground=[("active", primary)])
-        style.configure("Treeview.Item", padding=px(12, 0, 12, 0))
+        # Tree expanders: Tk 9 keeps an item's open/leaf state in bits that
+        # image elements can't match, so ttk's own indicator draws them.
+        indent = elements.tree_indent(s)
+        size = round(8 * s)
+        style.configure("Treeview.Item", padding=px(12, 0, 12, 0),
+                        indicatorsize=size, indicatormargins=(round(2 * s), 0, indent - size - round(2 * s), 0))
         style.configure("Treeview.Cell", padding=px(12, 0, 12, 0))
 
         style.configure("TNotebook", background=base, padding=0, tabmargins=0)
@@ -249,7 +314,6 @@ class Theme:
             style.configure("%s.TLabel" % name, font="WinUI.%s" % name)
         style.configure("Secondary.TLabel", foreground=secondary)
         style.configure("Accent.TLabel", foreground=hexc("AccentTextFillColorPrimary"))
-        style.configure("TSeparator", background=hexc("DividerStrokeColorDefault"))
         style.configure("Vertical.TScrollbar", troughcolor=base)
 
         for name in self._surface_styles:
@@ -259,6 +323,7 @@ class Theme:
             style.map("Surface.TNotebook.Tab", background=[])
 
         self._window_colors(base, primary)
+        self._classic_colors()
 
     def _window_colors(self, base, primary):
         c = self.colors
@@ -266,7 +331,10 @@ class Theme:
         hover = to_hex(c.on("SubtleFillColorSecondary", c.raw("AcrylicBackgroundFillColorDefault")))
         root = self.root
         root.configure(background=base)
+        # The drop-down list is its own window (class ComboboxPopdown); its
+        # background shows for a frame or two before the list draws.
         for pattern, value in (("*Toplevel.background", base),
+                               ("*ComboboxPopdown.background", flyout),
                                ("*TCombobox*Listbox.background", flyout),
                                ("*TCombobox*Listbox.foreground", primary),
                                ("*TCombobox*Listbox.selectBackground", hover),
@@ -283,12 +351,122 @@ class Theme:
             if widget.winfo_class() == "TCombobox":
                 try:
                     popdown = root.tk.call("ttk::combobox::PopdownWindow", widget)
+                    root.tk.call(popdown, "configure", "-background", flyout)
                     root.tk.call(str(popdown) + ".f.l", "configure", "-background", flyout,
                                  "-foreground", primary, "-selectbackground", hover,
                                  "-selectforeground", primary)
                 except tk.TclError:
                     pass
         _dark_title_bar(root, self.mode == "dark")
+
+    # -- classic Tk widgets ---------------------------------------------------------
+
+    def _classic_values(self):
+        """class -> {option: (on the window, on a card)} for classic Tk widgets."""
+        c = self.colors
+        h = lambda color: to_hex(color)
+        base, surface = h(c.base), h(c.surface)
+        primary = h(c.on("TextFillColorPrimary"))
+        disabled = h(c.on("TextFillColorDisabled"))
+        field = c.on("ControlFillColorDefault")
+        flyout = c.on("AcrylicBackgroundFillColorDefault")
+
+        def same(value):
+            return (value, value)
+
+        text_like = {
+            "background": same(h(field)),
+            "foreground": same(primary),
+            "disabledforeground": same(disabled),
+            "highlightbackground": same(h(c.on("ControlStrongStrokeColorDefault", field))),
+            "highlightcolor": same(h(c.on("AccentFillColorDefault", field))),
+            "selectforeground": same(primary),
+        }
+        return {
+            "Toplevel": {"background": same(base)},
+            "Frame": {"background": (base, surface)},
+            "Canvas": {"background": (base, surface)},
+            "Label": {"background": (base, surface), "foreground": same(primary)},
+            "Text": dict(text_like, insertbackground=same(primary),
+                         selectbackground=same(h(c.on("AccentFillColorSelectedTextBackground", field))),
+                         selectforeground=same("#ffffff"),
+                         inactiveselectbackground=same(h(c.on("SubtleFillColorTertiary", field)))),
+            # Like a WinUI ListView: no border, on the window or card color.
+            "Listbox": {
+                "background": (base, surface),
+                "foreground": same(primary),
+                "disabledforeground": same(disabled),
+                "selectbackground": (h(c.on("SubtleFillColorSecondary")),
+                                     h(c.on("SubtleFillColorSecondary", c.surface))),
+                "selectforeground": same(primary),
+            },
+            "Menu": {
+                "background": same(h(flyout)),
+                "foreground": same(primary),
+                "activebackground": same(h(c.on("SubtleFillColorSecondary", flyout))),
+                "activeforeground": same(primary),
+                "disabledforeground": same(h(c.on("TextFillColorDisabled", flyout))),
+                "selectcolor": same(primary),
+            },
+        }
+
+    def _classic_colors(self):
+        """Theme colors for classic Tk widgets: option-database defaults for new
+        widgets, and existing widgets still showing the previous theme's color
+        are updated (colors set by the app are left alone)."""
+        old, new = self._classic, self._classic_values()
+        st = stroke(self.scale)
+        px = lambda v: round(v * self.scale)
+        static = {
+            "Text": {"font": "WinUI.Body", "relief": "flat", "borderWidth": 0, "highlightThickness": st,
+                     "padX": px(10), "padY": px(5)},
+            # The flat border is drawn in the background color: it is the padding.
+            "Listbox": {"font": "WinUI.Body", "relief": "flat", "borderWidth": px(8), "highlightThickness": 0,
+                        "activeStyle": "none"},
+            "Label": {"font": "WinUI.Body"},
+            "Canvas": {"highlightThickness": 0},
+            "Menu": {"font": "WinUI.Body", "relief": "flat", "borderWidth": 0, "activeBorderWidth": 0,
+                     "tearOff": 0},
+        }
+        for cls in _CLASSIC_CLASSES:
+            for option, value in static.get(cls, {}).items():
+                self.root.option_add("*%s.%s" % (cls, option), value, "widgetDefault")
+            for option, (window, _) in new[cls].items():
+                self.root.option_add("*%s.%s" % (cls, _db_name(option)), window, "widgetDefault")
+        if old:
+            for widget in _descendants(self.root):
+                cls = widget.winfo_class()
+                if cls not in new:
+                    continue
+                for option, pair in new[cls].items():
+                    try:
+                        current = str(widget.cget(option))
+                    except tk.TclError:
+                        continue
+                    for previous, value in zip(old[cls][option], pair):
+                        if current == previous:
+                            widget.configure({option: value})
+                            break
+        self._classic = new
+
+    def _on_map_classic(self, event):
+        """Classic frames, labels, canvases and listboxes on a card take the
+        card colors (unless the app set its own)."""
+        widget = event.widget
+        if isinstance(widget, str) or not self._classic:
+            return
+        options = self._classic.get(widget.winfo_class(), {})
+        background = options.get("background")
+        if not background or str(widget.cget("background")) != background[0]:
+            return
+        parent = widget.master
+        while parent is not None and not _is_surface(parent):
+            parent = parent.master
+        if parent is None:
+            return
+        for option, (window, card) in options.items():
+            if window != card and str(widget.cget(option)) == window:
+                widget.configure({option: card})
 
     # -- fonts --------------------------------------------------------------------
 
@@ -330,6 +508,8 @@ class Theme:
     def _install_surface_hook(self):
         for cls in _THEMED_CLASSES:
             self.root.bind_class(cls, "<Map>", self._on_map, add="+")
+        for cls in ("Frame", "Label", "Canvas", "Listbox"):
+            self.root.bind_class(cls, "<Map>", self._on_map_classic, add="+")
 
     def _on_map(self, event):
         widget = event.widget
@@ -347,7 +527,7 @@ class Theme:
             # ttk picks an unstyled widget's layout from its type ("TFrame"),
             # not its class, so a Frame(class_="Card") needs the style named.
             current = widget.winfo_class()
-            if current in ("TScale", "TProgressbar", "TScrollbar"):
+            if current in ("TScale", "TProgressbar", "TScrollbar", "TSeparator"):
                 # These look up "<Orient>.<class>" layouts.
                 current = "%s.%s" % (str(widget.cget("orient")).title(), current)
         parent = widget.master
@@ -378,6 +558,10 @@ class Theme:
         self.style.configure(name, background=surface, fieldbackground=surface)
         if style_name == "Treeview":
             self.style.map(name, background=[("selected", surface)])
+        if style_name.endswith("TLabelframe"):
+            # The title sits outside the card, on the card it is inside.
+            self._surface_styles.add(name + ".Label")
+            self.style.configure(name + ".Label", background=surface, fieldbackground=surface)
         return name
 
     def _on_surface(self, layout):
@@ -414,6 +598,20 @@ def _is_surface(widget):
         return str(widget.cget("style")).split(".")[-1] in SURFACE_CLASSES
     except tk.TclError:
         return False
+
+
+_DB_NAMES = {
+    "activebackground": "activeBackground", "activeforeground": "activeForeground",
+    "disabledforeground": "disabledForeground", "highlightbackground": "highlightBackground",
+    "highlightcolor": "highlightColor", "inactiveselectbackground": "inactiveSelectBackground",
+    "insertbackground": "insertBackground", "selectbackground": "selectBackground",
+    "selectcolor": "selectColor", "selectforeground": "selectForeground",
+}
+
+
+def _db_name(option):
+    """Option-database name for a widget option ("selectbackground" -> "selectBackground")."""
+    return _DB_NAMES.get(option, option)
 
 
 def _image_name(element_name, index):

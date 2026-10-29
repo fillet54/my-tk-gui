@@ -9,11 +9,13 @@ Every image is opaque: it is painted over ``c.under``, the color it will
 sit on. The theme builds each element twice, once on the window background
 and once on the card surface (``Surface.<element>``), and widgets inside
 cards switch to the second set. Elements drawn on top of other elements
-(slider thumb, combobox chevron, scrollbar thumb) bake in what is beneath them.
+(slider thumb, chevrons, scrollbar thumb, tree chevrons) bake in what is
+beneath them.
 
 Stretchable images have a wide middle (``TILE``) because ttk fills a
 stretched element by tiling the middle slice; a 1px middle on a large panel
-means hundreds of thousands of draw calls.
+means hundreds of thousands of draw calls. ``size`` then sets the element's
+requested size back to just its borders.
 
 All coordinates are WinUI effective pixels times ``s``. Strokes that are
 1epx in WinUI are rounded to whole device pixels (WinUI's layout rounding
@@ -32,11 +34,11 @@ TILE = 64   # device pixels of stretchable middle in every nine-slice image
 class Element:
     def __init__(self, name, states, border=0, sticky="nsew", padding=0, size=(-1, -1)):
         self.name = name
-        self.size = size              # requested (w, h); -1 = the image's own size
         self.states = states          # [(statespec tuple, paint fn)], "" = default
         self.border = border
         self.sticky = sticky
         self.padding = padding
+        self.size = size              # requested (w, h); -1 = the image's own size
 
 
 class Colors:
@@ -78,16 +80,19 @@ def build(s):
         + _entry(s, st)
         + _check_radio_switch(s, st)
         + _combobox(s, st)
+        + _spinbox(s, st)
+        + _menubutton(s, st)
         + _slider(s, st)
         + _progress(s, st)
         + _scrollbars(s, st)
+        + _separators(s, st)
         + _list(s, st)
         + _tabs_and_cards(s, st)
     )
 
 
 # --------------------------------------------------------------------------
-# Buttons: elevation border (darker bottom edge), state fills, focus ring
+# Shared drawing
 # --------------------------------------------------------------------------
 
 def _bordered(c, W, H, R, st, fill, top, bottom, bottom_width=None):
@@ -109,6 +114,34 @@ def _focused(c, W, H, R, st, ring, fill):
     img.draw(rrect(ring + st, ring + st, W - ring - st, H - ring - st, max(R - ring - st, 0)), fill)
     return img
 
+
+def _chevron(W, H, cx, cy, direction, s, half=4, width=1.0):
+    """A chevron glyph painter: ``paint(c, under, color_name)``."""
+    h, d = half * s, half / 2 * s
+    pts = {
+        "down": [(cx - h, cy - d), (cx, cy + d), (cx + h, cy - d)],
+        "up": [(cx - h, cy + d), (cx, cy - d), (cx + h, cy + d)],
+        "right": [(cx - d, cy - h), (cx + d, cy), (cx - d, cy + h)],
+    }[direction]
+
+    def paint(c, under, color_name):
+        img = Svg(W, H, under)
+        return img.draw(polyline(pts, width * s), c.on(color_name, under))
+    return paint
+
+
+# Fill token for each button state, shared by elements drawn on a button.
+_BUTTON_FILLS = [
+    (("disabled",), "ControlFillColorDisabled"),
+    (("pressed",), "ControlFillColorTertiary"),
+    (("active",), "ControlFillColorSecondary"),
+    ("", "ControlFillColorDefault"),
+]
+
+
+# --------------------------------------------------------------------------
+# Buttons: elevation border (darker bottom edge), state fills, focus ring
+# --------------------------------------------------------------------------
 
 def _buttons(s, st, ring):
     R = METRICS["ControlCornerRadius"] * s
@@ -137,7 +170,15 @@ def _buttons(s, st, ring):
                              c.on("ControlStrokeColorOnAccentSecondary", fill))
         return paint
 
-    button = Element("Button.border", [
+    def subtle(fill_name, focus=False):
+        def paint(c):
+            fill = c.on(fill_name) if fill_name else c.under
+            if focus:
+                return _focused(c, W, H, R, st, ring, fill)
+            return Svg(W, H, c.under).draw(rrect(0, 0, W, H, R), fill)
+        return paint
+
+    standard_states = [
         (("disabled",), standard("ControlFillColorDisabled", flat=True)),
         (("focus", "pressed"), standard("ControlFillColorTertiary", focus=True)),
         (("focus", "active"), standard("ControlFillColorSecondary", focus=True)),
@@ -145,9 +186,8 @@ def _buttons(s, st, ring):
         (("pressed",), standard("ControlFillColorTertiary", flat=True)),
         (("active",), standard("ControlFillColorSecondary")),
         ("", standard("ControlFillColorDefault")),
-    ], border=B, size=(2 * B, 2 * B))
-
-    accent_button = Element("AccentButton.border", [
+    ]
+    accent_states = [
         (("disabled",), accent("AccentFillColorDisabled", border=False)),
         (("focus", "pressed"), accent("AccentFillColorTertiary", focus=True)),
         (("focus", "active"), accent("AccentFillColorSecondary", focus=True)),
@@ -155,8 +195,28 @@ def _buttons(s, st, ring):
         (("pressed",), accent("AccentFillColorTertiary", border=False)),
         (("active",), accent("AccentFillColorSecondary")),
         ("", accent("AccentFillColorDefault")),
-    ], border=B, size=(2 * B, 2 * B))
-    return [button, accent_button]
+    ]
+
+    def selected(states):
+        """``states`` with "selected" added to each spec (the default becomes ("selected",))."""
+        return [((spec if spec else ()) + ("selected",), paint) for spec, paint in states]
+
+    size = (2 * B, 2 * B)
+    return [
+        Element("Button.border", standard_states, border=B, size=size),
+        Element("AccentButton.border", accent_states, border=B, size=size),
+        # ToggleButton: a standard button that turns accent when checked.
+        Element("ToggleButton.border", selected(accent_states) + standard_states, border=B, size=size),
+        # Toolbar / subtle button: no fill until hovered; accent when checked.
+        Element("Toolbutton.border", selected(accent_states) + [
+            (("disabled",), subtle(None)),
+            (("pressed",), subtle("SubtleFillColorTertiary")),
+            (("focus", "active"), subtle("SubtleFillColorSecondary", focus=True)),
+            (("focus",), subtle(None, focus=True)),
+            (("active",), subtle("SubtleFillColorSecondary")),
+            ("", subtle(None)),
+        ], border=B, size=size),
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -173,7 +233,7 @@ def _textbox_paint(W, H, R, st, underline, fill_name, bottom_name, thick=False, 
 
 
 # (state spec, fill token, bottom stroke token, thick underline, flat) per TextBox state
-_TEXTBOX_STATES = [
+TEXTBOX_STATES = [
     (("disabled",), "ControlFillColorDisabled", "ControlStrokeColorDefault", False, True),
     (("invalid", "focus"), "ControlFillColorInputActive", "SystemFillColorCritical", True, False),
     (("invalid",), "ControlFillColorDefault", "SystemFillColorCritical", True, False),
@@ -183,14 +243,18 @@ _TEXTBOX_STATES = [
 ]
 
 
-def _entry(s, st):
+def _textbox_geometry(s):
     R = METRICS["ControlCornerRadius"] * s
     underline = max(2, round(2 * s))
     B = math.ceil(R) + underline
-    W = H = 2 * B + TILE
+    return R, underline, B, 2 * B + TILE
+
+
+def _entry(s, st):
+    R, underline, B, W = _textbox_geometry(s)
     return [Element("Entry.field", [
-        (spec, _textbox_paint(W, H, R, st, underline, fill, bottom, thick=thick, flat=flat))
-        for spec, fill, bottom, thick, flat in _TEXTBOX_STATES
+        (spec, _textbox_paint(W, W, R, st, underline, fill, bottom, thick=thick, flat=flat))
+        for spec, fill, bottom, thick, flat in TEXTBOX_STATES
     ], border=B, size=(2 * B, 2 * B))]
 
 
@@ -326,10 +390,8 @@ def _check_radio_switch(s, st):
 # --------------------------------------------------------------------------
 
 def _combobox(s, st):
-    R = METRICS["ControlCornerRadius"] * s
-    underline = max(2, round(2 * s))
-    B = math.ceil(R) + underline
-    W = H = 2 * B + TILE
+    R, underline, B, W = _textbox_geometry(s)
+    H = W
 
     def button(fill_name, flat=False):
         def paint(c):
@@ -347,7 +409,7 @@ def _combobox(s, st):
         (("readonly",), "ControlFillColorDefault", button("ControlFillColorDefault")),
     ] + [
         (spec, fill, _textbox_paint(W, H, R, st, underline, fill, bottom, thick=thick, flat=flat))
-        for spec, fill, bottom, thick, flat in _TEXTBOX_STATES if "invalid" not in spec
+        for spec, fill, bottom, thick, flat in TEXTBOX_STATES if "invalid" not in spec
     ]
     # The field reserves its right stroke so the opaque chevron column never covers it.
     field = Element("Combobox.field", [(spec, paint) for spec, _, paint in FIELD],
@@ -355,23 +417,54 @@ def _combobox(s, st):
 
     AW = round(METRICS["ComboBoxGlyphColumn"] * s) - st
     AH = round(12 * s)
-    cx, cy = AW - 20 * s + st, AH / 2
+    glyph = _chevron(AW, AH, AW - 20 * s + st, AH / 2, "down", s)
 
     # The chevron sits on the field, so each state is painted on that state's fill.
-    def chevron(fill_name, color_name):
-        def paint(c):
-            fill = c.on(fill_name)
-            img = Svg(AW, AH, fill)
-            pts = [(cx - 4 * s, cy - 2 * s), (cx, cy + 2 * s), (cx + 4 * s, cy - 2 * s)]
-            img.draw(polyline(pts, 1.0 * s), c.on(color_name, fill))
-            return img
-        return paint
-
     arrow = Element("Combobox.downarrow", [
-        (spec, chevron(fill, "TextFillColorDisabled" if "disabled" in spec else "TextFillColorSecondary"))
+        (spec, lambda c, fill=fill, spec=spec: glyph(
+            c, c.on(fill), "TextFillColorDisabled" if "disabled" in spec else "TextFillColorSecondary"))
         for spec, fill, _ in FIELD
     ], sticky="")
     return [field, arrow]
+
+
+# --------------------------------------------------------------------------
+# NumberBox (Spinbox): a TextBox with inline up/down buttons
+# --------------------------------------------------------------------------
+
+def _spinbox(s, st):
+    R, underline, B, W = _textbox_geometry(s)
+    field = Element("Spinbox.field", [
+        (spec, _textbox_paint(W, W, R, st, underline, fill, bottom, thick=thick, flat=flat))
+        for spec, fill, bottom, thick, flat in TEXTBOX_STATES
+    ], border=B, padding=(0, 0, st, 0), size=(2 * B, 2 * B))
+
+    AW = round(METRICS["NumberBoxSpinButton"] * s)
+    AH = round(20 * s)
+    out = [field]
+    for name, direction in (("uparrow", "up"), ("downarrow", "down")):
+        glyph = _chevron(AW, AH, AW / 2, AH / 2, direction, s)
+        out.append(Element("Spinbox.%s" % name, [
+            (spec, lambda c, fill=fill, spec=spec, glyph=glyph: glyph(
+                c, c.on(fill), "TextFillColorDisabled" if "disabled" in spec else "TextFillColorSecondary"))
+            for spec, fill, _, _, _ in TEXTBOX_STATES
+        ], sticky=""))
+    return out
+
+
+# --------------------------------------------------------------------------
+# DropDownButton (Menubutton): a button with a chevron after the label
+# --------------------------------------------------------------------------
+
+def _menubutton(s, st):
+    gap, glyph_w = METRICS["DropDownGap"] * s, 12 * s
+    W, H = round(gap + glyph_w), round(12 * s)
+    glyph = _chevron(W, H, W - glyph_w / 2, H / 2, "down", s)
+    return [Element("Menubutton.indicator", [
+        (spec, lambda c, fill=fill, spec=spec: glyph(
+            c, c.on(fill), "TextFillColorDisabled" if "disabled" in spec else "TextFillColorSecondary"))
+        for spec, fill in _BUTTON_FILLS
+    ], sticky="")]
 
 
 # --------------------------------------------------------------------------
@@ -381,45 +474,53 @@ def _combobox(s, st):
 def _slider(s, st):
     T = METRICS["SliderThumb"] * s
     H = round(T)
-    cy = H / 2
+    c0 = H / 2
     track = METRICS["SliderTrack"] * s
     bx = math.ceil(track / 2) + 1
-    W = 2 * bx + TILE
-
-    def band(img, x0, x1, color):
-        return img.draw(rrect(x0, cy - track / 2, x1, cy + track / 2, track / 2), color)
-
-    def trough(color_name):
-        def paint(c):
-            return band(Svg(W, H, c.under), 0, W, c.on(color_name))
-        return paint
-
-    trough_el = Element("Horizontal.Scale.trough", [
-        (("disabled",), trough("ControlStrongFillColorDisabled")),
-        ("", trough("ControlStrongFillColorDefault")),
-    ], border=(bx, 0, bx, 0), sticky="ew", size=(2 * bx, -1))
-
+    L = 2 * bx + TILE
     rest, hover, pressed = METRICS["SliderInnerThumb"]
+    out = []
 
-    # The thumb always sits on the track, so the track runs through its image.
-    def thumb(inner, inner_color, track_color):
-        def paint(c):
-            img = band(Svg(H, H, c.under), -track, H + track, c.on(track_color))
-            solid = c.on("ControlSolidFillColorDefault")
-            img.draw(circle(cy, cy, T / 2), c.on("ControlStrokeColorSecondary", solid))
-            img.draw(circle(cy, cy - st / 2, T / 2 - st / 2), c.on("ControlStrokeColorDefault", solid))
-            img.draw(circle(cy, cy, T / 2 - st), solid)
-            img.draw(circle(cy, cy, inner * s / 2), c.on(inner_color, solid))
-            return img
-        return paint
+    for orient in ("Horizontal", "Vertical"):
+        vertical = orient == "Vertical"
 
-    slider_el = Element("Horizontal.Scale.slider", [
-        (("disabled",), thumb(rest, "AccentFillColorDisabled", "ControlStrongFillColorDisabled")),
-        (("pressed",), thumb(pressed, "AccentFillColorTertiary", "ControlStrongFillColorDefault")),
-        (("hover",), thumb(hover, "AccentFillColorSecondary", "ControlStrongFillColorDefault")),
-        ("", thumb(rest, "AccentFillColorDefault", "ControlStrongFillColorDefault")),
-    ], sticky="")
-    return [trough_el, slider_el]
+        def band(img, l0, l1, color, vertical=vertical):
+            """The track from l0 to l1 along the slider, centered across it."""
+            a0, a1 = c0 - track / 2, c0 + track / 2
+            box = (a0, l0, a1, l1) if vertical else (l0, a0, l1, a1)
+            return img.draw(rrect(*box, track / 2), color)
+
+        def trough(color_name, band=band, vertical=vertical):
+            def paint(c):
+                img = Svg(*((H, L) if vertical else (L, H)), c.under)
+                return band(img, 0, L, c.on(color_name))
+            return paint
+
+        out.append(Element("%s.Scale.trough" % orient, [
+            (("disabled",), trough("ControlStrongFillColorDisabled")),
+            ("", trough("ControlStrongFillColorDefault")),
+        ], border=(0, bx, 0, bx) if vertical else (bx, 0, bx, 0), sticky="ns" if vertical else "ew",
+            size=(-1, 2 * bx) if vertical else (2 * bx, -1)))
+
+        # The thumb always sits on the track, so the track runs through its image.
+        def thumb(inner, inner_color, track_color, band=band):
+            def paint(c):
+                img = band(Svg(H, H, c.under), -track, H + track, c.on(track_color))
+                solid = c.on("ControlSolidFillColorDefault")
+                img.draw(circle(c0, c0, T / 2), c.on("ControlStrokeColorSecondary", solid))
+                img.draw(circle(c0, c0 - st / 2, T / 2 - st / 2), c.on("ControlStrokeColorDefault", solid))
+                img.draw(circle(c0, c0, T / 2 - st), solid)
+                img.draw(circle(c0, c0, inner * s / 2), c.on(inner_color, solid))
+                return img
+            return paint
+
+        out.append(Element("%s.Scale.slider" % orient, [
+            (("disabled",), thumb(rest, "AccentFillColorDisabled", "ControlStrongFillColorDisabled")),
+            (("pressed",), thumb(pressed, "AccentFillColorTertiary", "ControlStrongFillColorDefault")),
+            (("hover",), thumb(hover, "AccentFillColorSecondary", "ControlStrongFillColorDefault")),
+            ("", thumb(rest, "AccentFillColorDefault", "ControlStrongFillColorDefault")),
+        ], sticky=""))
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -428,30 +529,40 @@ def _slider(s, st):
 
 def _progress(s, st):
     H = max(3, round(METRICS["ProgressBarIndicator"] * s))
-    cy = H / 2
-
-    def track(c, w):
-        img = Svg(w, H, c.under)
-        return img.draw(rrect(0, cy - st / 2, w, cy + st / 2, 0), c.on("ControlStrongStrokeColorDefault"))
-
+    c0 = H / 2
     b = math.ceil(H / 2)
     PW = 2 * b + TILE
+    moving = round(METRICS["ProgressBarIndeterminate"] * s)
+    out = []
 
-    # The bar sits on the track line, so it is painted over it.
-    def bar(color_name):
-        def paint(c):
-            return track(c, PW).draw(rrect(0, 0, PW, H, H / 2), c.on(color_name))
-        return paint
+    for orient in ("Horizontal", "Vertical"):
+        vertical = orient == "Vertical"
 
-    return [
-        Element("Horizontal.Progressbar.trough", [("", lambda c: track(c, 2 + TILE))],
-                border=(1, 0, 1, 0), sticky="ew", size=(2, -1)),
-        Element("Horizontal.Progressbar.pbar", [
-            (("disabled",), bar("AccentFillColorDisabled")),
-            ("", bar("AccentFillColorDefault")),
-        # ttk sizes the moving bar of an indeterminate progressbar from this width.
-        ], border=(b, 0, b, 0), sticky="nsew", size=(round(METRICS["ProgressBarIndeterminate"] * s), -1)),
-    ]
+        def size(length, vertical=vertical):
+            return (H, length) if vertical else (length, H)
+
+        def track(c, length, vertical=vertical, size=size):
+            box = (c0 - st / 2, 0, c0 + st / 2, length) if vertical else (0, c0 - st / 2, length, c0 + st / 2)
+            return Svg(*size(length), c.under).draw(rrect(*box, 0), c.on("ControlStrongStrokeColorDefault"))
+
+        # The bar sits on the track line, so it is painted over it.
+        def bar(color_name, track=track, size=size):
+            def paint(c):
+                return track(c, PW).draw(rrect(0, 0, *size(PW), H / 2), c.on(color_name))
+            return paint
+
+        out += [
+            Element("%s.Progressbar.trough" % orient, [("", lambda c, track=track: track(c, 2 + TILE))],
+                    border=(0, 1, 0, 1) if vertical else (1, 0, 1, 0), sticky="ns" if vertical else "ew",
+                    size=(-1, 2) if vertical else (2, -1)),
+            # ttk sizes the moving bar of an indeterminate progressbar from this length.
+            Element("%s.Progressbar.pbar" % orient, [
+                (("disabled",), bar("AccentFillColorDisabled")),
+                ("", bar("AccentFillColorDefault")),
+            ], border=(0, b, 0, b) if vertical else (b, 0, b, 0), sticky="nsew",
+                size=(-1, moving) if vertical else (moving, -1)),
+        ]
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -533,11 +644,39 @@ def _scrollbars(s, st):
 
 
 # --------------------------------------------------------------------------
-# ListView rows (Treeview) and headings
+# Separator: a 1px divider line
+# --------------------------------------------------------------------------
+
+def _separators(s, st):
+    L = 2 + TILE
+
+    def line(vertical):
+        def paint(c):
+            img = Svg(*((st, L) if vertical else (L, st)), c.under)
+            return img.draw(rrect(0, 0, *((st, L) if vertical else (L, st)), 0), c.on("DividerStrokeColorDefault"))
+        return paint
+
+    return [
+        Element("Horizontal.Separator.separator", [("", line(False))], border=(1, 0, 1, 0),
+                sticky="ew", size=(2, -1)),
+        Element("Vertical.Separator.separator", [("", line(True))], border=(0, 1, 0, 1),
+                sticky="ns", size=(-1, 2)),
+    ]
+
+
+# --------------------------------------------------------------------------
+# ListView / TreeView rows (Treeview), tree chevrons and headings
 # --------------------------------------------------------------------------
 
 def row_height(s):
     return round(METRICS["ListViewItemHeight"] * s)
+
+
+def tree_indent(s):
+    return round(METRICS["TreeViewIndent"] * s)
+
+
+SELECTED_ROW = "SubtleFillColorSecondary"
 
 
 def _list(s, st):
@@ -560,23 +699,29 @@ def _list(s, st):
         return paint
 
     row_el = Element("Treeitem.row", [
-        (("selected",), row("SubtleFillColorSecondary", True)),
+        (("selected",), row(SELECTED_ROW, True)),
         ("", row(None, False)),
     ], border=(BL, top, BR, H - 1 - top), sticky="nsew", size=(BL + BR, -1))
 
     HH = st + 2
+    HW = 2 + TILE
 
-    def heading(c):
-        img = Svg(2 + TILE, HH, c.under)
-        return img.draw(rrect(0, HH - st, 2 + TILE, HH, 0), c.on("DividerStrokeColorDefault"))
+    def heading(fill_name):
+        def paint(c):
+            img = Svg(HW, HH, c.on(fill_name) if fill_name else c.under)
+            return img.draw(rrect(0, HH - st, HW, HH, 0), c.on("DividerStrokeColorDefault"))
+        return paint
 
-    heading_el = Element("Treeheading.cell", [("", heading)], border=(1, 1, 1, st), sticky="nsew",
-                         size=(2, -1))
+    heading_el = Element("Treeheading.cell", [
+        (("pressed",), heading("SubtleFillColorTertiary")),
+        (("active",), heading("SubtleFillColorSecondary")),
+        ("", heading(None)),
+    ], border=(1, 1, 1, st), sticky="nsew", size=(2, -1))
     return [row_el, heading_el]
 
 
 # --------------------------------------------------------------------------
-# TabView (Notebook) and Card
+# TabView (Notebook), Card and LabelFrame
 # --------------------------------------------------------------------------
 
 def _tabs_and_cards(s, st):
@@ -610,9 +755,13 @@ def _tabs_and_cards(s, st):
             return img
         return paint
 
-    # Padding keeps pages and card content (opaque, square) off the rounded border.
-    client_el = Element("Notebook.client", [("", panel((0, R, R, R)))], border=B, sticky="nsew",
-                        padding=B, size=(2 * B, 2 * B))
-    card_el = Element("Card.border", [("", panel((R, R, R, R)))], border=B, sticky="nsew",
-                      padding=round(METRICS["CardPadding"] * s), size=(2 * B, 2 * B))
-    return [tab_el, client_el, card_el]
+    # Padding keeps pages (opaque, square) off the rounded border. Cards and
+    # LabelFrames get theirs from the widget's -padding (see Theme).
+    card = [("", panel((R, R, R, R)))]
+    return [
+        tab_el,
+        Element("Notebook.client", [("", panel((0, R, R, R)))], border=B, sticky="nsew",
+                padding=B, size=(2 * B, 2 * B)),
+        Element("Card.border", card, border=B, sticky="nsew", size=(2 * B, 2 * B)),
+        Element("Labelframe.border", card, border=B, sticky="nsew", size=(2 * B, 2 * B)),
+    ]

@@ -51,11 +51,27 @@ move the folder.
 | CheckBox | `TCheckbutton` | unchecked, checked, indeterminate × rest/hover/pressed/disabled |
 | RadioButton | `TRadiobutton` | unselected, selected × 4 |
 | ToggleSwitch | `Switch.TCheckbutton` | off, on × 4, with the knob growing on hover and stretching on press |
-| Slider | `Horizontal.TScale` | thumb grows on hover, shrinks on press |
-| ProgressBar | `Horizontal.TProgressbar` | 1px track, 3px rounded accent bar, indeterminate |
+| Slider | `TScale` (horizontal and vertical) | thumb grows on hover, shrinks on press |
+| ProgressBar | `TProgressbar` (horizontal and vertical) | 1px track, 3px rounded accent bar, indeterminate |
+| NumberBox | `TSpinbox` | TextBox look with inline up/down buttons |
+| DropDownButton | `TMenubutton` | button with a chevron |
+| ToggleButton | `Checkbutton(style="Toggle.TButton")` | a button that turns accent when checked |
+| Toolbar / subtle button | `style="Toolbutton"` (Button, Checkbutton, Radiobutton) | no fill until hovered; accent when checked |
 | ListView + ScrollBar | `Treeview`, `TScrollbar` | 40px rows, rounded selection with the accent pill; the scrollbar is a 2px line that expands to a thumb and arrows on hover |
+| TreeView | `Treeview` with the tree column | expand/collapse arrows, 24px indent; hover on headings |
 | TabView | `TNotebook` | selected tab joins the content panel; hover |
-| Card / typography | `Frame(class_="Card")`, `Caption/Body/BodyStrong/Subtitle/Title/TitleLarge/Display.TLabel`, `Secondary.TLabel`, `Accent.TLabel` | |
+| Divider | `TSeparator` (both orientations) | 1px divider |
+| Card / typography | `Frame(class_="Card")` or `style="Card"`, `Caption/Body/BodyStrong/Subtitle/Title/TitleLarge/Display.TLabel`, `Secondary.TLabel`, `Accent.TLabel` | |
+| Group box | `TLabelframe` | WinUI has none: the title sits above a card |
+| Multi-line TextBox | `winui_ttk.TextBox` | a `tk.Text` (`.text`) inside the TextBox border, with the focus underline |
+
+Classic Tk widgets (`Menu`, `Text`, `Listbox`, `Canvas`, `Frame`, `Label`,
+`Toplevel`) get theme colors and fonts through the option database, and
+follow mode and accent changes. Colors your app sets itself are left
+alone. A `Listbox` looks like a borderless ListView; a bare `Text` gets a
+1px border that turns accent when focused (use `TextBox` for the full
+look). Menus take colors only: Tk can't round them or pad their items, and
+on Windows the menu bar is drawn by Windows.
 
 Widgets inside a `Card` or `Notebook` move to the card surface color
 automatically (they get a `Surface.<style>` style when first shown). You
@@ -106,6 +122,10 @@ Known gaps, which are ttk limits rather than missing work:
 - **ComboBox dropdown:** it's a plain Tk listbox, so the colors match but
   it has no rounded corners, shadow or 40px items.
 - **ListView:** ttk (Tk 9 included) has no per-row hover.
+- **TreeView:** expanders are ttk's own triangles, not WinUI chevrons. Tk 9
+  keeps an item's open/leaf state where image elements can't see it.
+- **NumberBox:** the up/down buttons have no hover highlight of their own;
+  ttk only reports hover for the whole widget.
 - **Focus rings:** buttons only. On check, radio and switch controls a ring
   would push the control off WinUI's left edge.
 - **Text rendering:** Tk uses GDI rather than DirectWrite on Windows, so

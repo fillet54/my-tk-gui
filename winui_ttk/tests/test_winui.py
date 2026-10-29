@@ -3,7 +3,7 @@ import tkinter as tk
 import unittest
 from tkinter import ttk
 
-from winui_ttk import Theme, tokens
+from winui_ttk import Theme, TextBox, tokens
 from winui_ttk.svg import Svg, rrect
 
 try:
@@ -73,7 +73,10 @@ class TestTheme(unittest.TestCase):
             root, theme = self.make(scale)
             frame = ttk.Frame(root)
             widgets = [ttk.Button(frame, text="Hi"), ttk.Entry(frame),
-                       ttk.Combobox(frame, state="readonly"), ttk.Checkbutton(frame, text="x")]
+                       ttk.Combobox(frame, state="readonly"), ttk.Checkbutton(frame, text="x"),
+                       ttk.Spinbox(frame), ttk.Menubutton(frame, text="Menu"),
+                       ttk.Checkbutton(frame, text="Toggle", style="Toggle.TButton"),
+                       ttk.Button(frame, text="Tool", style="Toolbutton")]
             for w in widgets:
                 w.pack()
             root.update_idletasks()
@@ -158,6 +161,96 @@ class TestTheme(unittest.TestCase):
         self.assertEqual(button.cget("style"), "Surface.Accent.TButton")
         layout = ttk.Style(root).layout("Surface.Accent.TButton")
         self.assertEqual(layout[0][0], "Surface.AccentButton.border")
+
+
+
+@unittest.skipUnless(HAVE_TK9, "needs a display and Tk 9")
+class TestMoreControls(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.theme = Theme(self.root, scale=1.0, accent="#0078D4")
+        self.style = ttk.Style(self.root)
+
+    def show(self):
+        self.root.deiconify()
+        self.root.update()
+
+    def test_vertical_and_separator_layouts(self):
+        for orient in ("Horizontal", "Vertical"):
+            for cls, element in (("TScale", "Scale.trough"), ("TProgressbar", "Progressbar.trough"),
+                                 ("TSeparator", "Separator.separator")):
+                with self.subTest(orient=orient, cls=cls):
+                    layout = repr(self.style.layout("%s.%s" % (orient, cls)))
+                    self.assertIn("%s.%s" % (orient, element), layout)
+        scale = ttk.Scale(self.root, orient="vertical", length=100)
+        scale.pack()
+        self.show()
+        self.assertEqual(scale.winfo_reqwidth(), 20 + 12)   # thumb + padding
+
+    def test_spinbox_arrows_are_clickable(self):
+        spin = ttk.Spinbox(self.root, from_=0, to=10)
+        spin.set(5)
+        spin.pack()
+        self.show()
+        w, h = spin.winfo_width(), spin.winfo_height()
+        right = spin.identify(w - 15, h // 2)
+        self.assertTrue(right.endswith("downarrow"), right)
+        self.assertTrue(spin.identify(w - 45, h // 2).endswith("uparrow"))
+
+    def test_labelframe_title_outside_card(self):
+        group = ttk.Labelframe(self.root, text="Title")
+        entry = ttk.Entry(group)
+        entry.pack()
+        group.pack()
+        self.show()
+        self.assertGreater(entry.winfo_y(), 16 + 14)        # below the title and card padding
+        self.assertEqual(entry.cget("style"), "Surface.TEntry")
+
+    def test_toolbutton_on_card_uses_surface_images(self):
+        card = ttk.Frame(self.root, class_="Card")
+        button = ttk.Button(card, text="x", style="Toolbutton")
+        card.pack()
+        button.pack()
+        self.show()
+        self.assertEqual(self.style.layout("Surface.Toolbutton")[0][0], "Surface.Toolbutton.border")
+
+    def test_classic_widgets_follow_the_theme(self):
+        text = tk.Text(self.root)
+        mine = tk.Text(self.root, background="#123456")
+        card = ttk.Frame(self.root, class_="Card")
+        inner = tk.Frame(card)
+        listbox = tk.Listbox(card)
+        menu = tk.Menu(self.root)
+        for w in (text, mine, card, inner, listbox):
+            w.pack()
+        self.show()
+        light_text = str(text.cget("background"))
+        surface = self.theme.color("CardBackgroundFillColorDefault")
+        self.assertEqual(str(inner.cget("background")), surface)
+        self.assertEqual(str(listbox.cget("background")), surface)
+        self.assertEqual(int(menu.cget("tearoff")), 0)
+
+        self.theme.set_mode("dark")
+        self.assertNotEqual(str(text.cget("background")), light_text)
+        self.assertEqual(str(mine.cget("background")), "#123456")       # app's own color kept
+        self.assertEqual(str(inner.cget("background")), self.theme.color("CardBackgroundFillColorDefault"))
+        self.assertEqual(str(menu.cget("background")),
+                         self.theme.color("AcrylicBackgroundFillColorDefault"))
+
+    def test_textbox_focus_and_disable(self):
+        box = TextBox(self.root, height=3)
+        box.pack()
+        self.show()
+        rest = str(box.text.cget("background"))
+        box.text.focus_force()
+        self.root.update()
+        self.assertTrue(box.instate(["focus"]))
+        self.assertNotEqual(str(box.text.cget("background")), rest)
+        box.set_enabled(False)
+        self.assertEqual(str(box.text.cget("state")), "disabled")
+        self.assertTrue(box.instate(["disabled"]))
 
 
 if __name__ == "__main__":
