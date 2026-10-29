@@ -98,9 +98,26 @@ class TestDemo(GuiTestCase):
         self.assertEqual(len(self.tree.get_children()), 2)
         self.assertIn("Showing 2 of 6 expenses", self.labels())
 
-    def test_theme_switch(self):
-        self.vm.dark_mode = True
-        self.assertEqual(self.root.tk.call("ttk::style", "theme", "use"), "sun-valley-dark")
+    def test_theme_binding_is_a_no_op_on_the_platform_theme(self):
+        self.vm.dark_mode = True        # nothing to switch; must not fail
+        self.assertIsNone(self.root.ui_theme)
+
+    def test_theme_binding_drives_a_theme_with_modes(self):
+        modes = []
+
+        class FakeTheme:
+            def __init__(self, root, scale):
+                pass
+
+            def set_mode(self, mode):
+                modes.append(mode)
+        root = gui.create_root("t", theme=FakeTheme)
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        vm = sample()
+        gui.realize(root, demo.VIEW, vm)
+        vm.dark_mode = True
+        self.assertEqual(modes, ["light", "dark"])
 
 
 class Counter:
@@ -175,6 +192,115 @@ class TestBindings(GuiTestCase):
         vm.count = 5   # must not touch the dead widget
 
 
+class Page:
+    def __init__(self, name):
+        self.name = name
+
+
+class OtherPage:
+    pass
+
+
+class Host:
+    current = observable(None)
+
+
+class TestContentAndParameters(GuiTestCase):
+    def setUp(self):
+        super().setUp()
+        gui.template(Page, '<group><label text="Page {name}" /></group>')
+
+    def labels(self):
+        """Text of the labels that are laid out (the window itself is withdrawn)."""
+        def shown(w):
+            while w is not self.root:
+                if not w.winfo_manager():
+                    return False
+                w = w.master
+            return True
+        return [str(l.cget("text")) for l in find(self.root, "TLabel") if shown(l)]
+
+    def test_command_parameter_drives_can_execute_and_execute(self):
+        class VM:
+            item = observable(None)
+            opened = observable(None)
+
+            @command(can_execute=lambda self, item: item is not None)
+            def open(self, item):
+                self.opened = item
+        vm = VM()
+        self.build('<group><button text="Open" command="{open}" command_parameter="{item}" /></group>', vm)
+        button = find(self.root, "TButton")[0]
+        self.assertTrue(button.instate(["disabled"]))
+        vm.item = "a"
+        self.root.update()
+        self.assertTrue(button.instate(["!disabled"]))
+        button.invoke()
+        self.assertEqual(vm.opened, "a")
+
+    def test_literal_parameter_and_plain_callable(self):
+        got = []
+
+        class VM:
+            pass
+        vm = VM()
+        vm.pick = got.append
+        self.build('<group><button text="x" command="{pick}" command_parameter="settings" /></group>', vm)
+        find(self.root, "TButton")[0].invoke()
+        self.assertEqual(got, ["settings"])
+
+    def test_content_swaps_views_by_type(self):
+        host = Host()
+        self.build('<group><content content="{current}" /></group>', host)
+        self.assertEqual(self.labels(), [])
+        host.current = Page("one")
+        self.root.update()
+        self.assertEqual(self.labels(), ["Page one"])
+        host.current = Page("two")
+        self.root.update()
+        self.assertEqual(self.labels(), ["Page two"])
+        self.assertEqual(len(find(self.root, "TLabel")), 1)   # old view destroyed
+        host.current = OtherPage()
+        self.root.update()
+        self.assertIn("No view registered for OtherPage", self.labels()[0])
+
+    def test_content_cache_keeps_recent_views(self):
+        host = Host()
+        self.build('<group><content content="{current}" cache="2" /></group>', host)
+        a, b, c = Page("a"), Page("b"), Page("c")
+        for page in (a, b, a):
+            host.current = page
+            self.root.update()
+        self.assertEqual(len(find(self.root, "TLabel")), 2)   # a and b kept
+        self.assertEqual(self.labels(), ["Page a"])
+        host.current = c
+        self.root.update()
+        self.assertEqual(len(find(self.root, "TLabel")), 2)   # b evicted (oldest)
+
+
+class TestShellDemo(GuiTestCase):
+    def test_navigation(self):
+        import shell
+        vm = shell.Shell(sample())
+        self.build(shell.SHELL, vm)
+        nav_items = find(self.root, "TRadiobutton")
+        nav_items[1].invoke()                                  # Expenses
+        self.root.update()
+        self.assertIsInstance(vm.nav.current, shell.ExpensesPage)
+        vm.data.selected = vm.data.expenses[0]
+        self.root.update()
+        open_button = [b for b in find(self.root, "TButton") if str(b.cget("text")) == "Open"][0]
+        open_button.invoke()
+        self.root.update()
+        self.assertIsInstance(vm.nav.current, shell.ExpensePage)
+        self.assertEqual(vm.title, "Groceries")
+        self.assertEqual(vm.section, "expenses")
+        vm.nav.go_back()
+        nav_items[2].invoke()                                  # Settings
+        vm.nav.current.dark_mode = True                        # sent via the Messenger
+        self.assertEqual(vm.theme, "dark")
+
+
 class TestPx(unittest.TestCase):
     def test_px(self):
         self.assertEqual(gui._px("16", 2), 32)
@@ -206,25 +332,20 @@ class TestScaling(unittest.TestCase):
         frame = view.widget
         label = find(root, "TLabel")[0]
         tree = find(root, "Treeview")[0]
-        image = root.tk.eval("set ttk::theme::sun-valley-light::images(button-rest)")
         return {
             "padding": [int(str(p)) for p in frame.cget("padding")],
             "padx": label.pack_info()["padx"],
             "column": tree.column("x", "width"),
             "tk scaling": round(float(root.tk.call("tk", "scaling")), 2),
-            "image": int(root.tk.call("image", "width", image)),
-            "button padding": [int(str(p)) for p in root.tk.call("ttk::style", "lookup", "TButton", "-padding")],
         }
 
     def test_1x(self):
         self.assertEqual(self.build(1.0), {
-            "padding": [10], "padx": (3, 5), "column": 100, "tk scaling": 1.33,
-            "image": 20, "button padding": [8, 4]})
+            "padding": [10], "padx": (3, 5), "column": 100, "tk scaling": 1.33})
 
     def test_2x(self):
         self.assertEqual(self.build(2.0), {
-            "padding": [20], "padx": (6, 10), "column": 200, "tk scaling": 2.67,
-            "image": 40, "button padding": [16, 8]})
+            "padding": [20], "padx": (6, 10), "column": 200, "tk scaling": 2.67})
 
 
 if __name__ == "__main__":

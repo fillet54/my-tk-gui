@@ -3,14 +3,17 @@
 Reactive MVVM for tkinter. You write a **view model** in plain Python and a
 **view** in XML. Neither one says *when* anything updates. Dependencies are
 discovered automatically (in the style of [Assisticant](https://github.com/michaellperry/Assisticant)),
-so every label, list, enabled state and theme follows the data on its own.
+so every label, list and enabled state follows the data on its own.
 
 ```
 python3 demo.py                          # expense tracker
-python3 -m unittest discover -s tests    # 38 tests, most need no window
+python3 shell.py                         # shell app: nav pane, pages, back button
+python3-tk9 shell.py --winui             # the same with the WinUI theme (Tk 9)
+python3 -m unittest discover -s tests    # 60 tests, most need no window
 ```
 
-The library is small enough to read and change (`reactive.py`, `gui.py`).
+The library is small enough to read and change (`reactive.py`, `gui.py`,
+`mvvm.py`).
 Fork it and grow the abstractions your own app needs.
 
 ## The idea
@@ -125,7 +128,8 @@ exercises the whole demo by setting attributes and reading results.
 |---|---|
 | `observable(default, factory=)` | a settable attribute; reads are tracked |
 | `@computed` | a cached derived value; lazy, recalculated when an input changes |
-| `@command(can_execute=)` | an action; bound buttons enable/disable themselves |
+| `@command(can_execute=)` | an action (optionally taking a parameter); bound buttons enable/disable themselves |
+| `RelayCommand(execute, can_execute)` | the same from plain functions, built at runtime |
 | `ObservableList` | a list whose reads are tracked and whose changes notify |
 | `watch(getter, callback)`, `autorun(fn)` | side effects that rerun on change |
 | `batch()` | group writes so reactions run once |
@@ -136,6 +140,54 @@ only on the branch it took. A change first marks everything downstream
 stale, then reactions run, so a reaction never sees half-updated values.
 A node holds subscriptions only while it is up to date, which means a
 discarded view model is freed after the next change to its inputs.
+
+## Commands
+
+Commands follow MVVM Light's `ICommand`: `execute(parameter)`,
+`can_execute(parameter)` and `raise_can_execute_changed()`. Calling a
+command is `execute`. A command only runs when `can_execute` allows it,
+and it runs inside `batch()`.
+
+```python
+class ExpensesPage:
+    @command(can_execute=lambda self, expense: expense is not None)
+    def open(self, expense):
+        self.nav.go("expense", expense)
+
+    def __init__(self):
+        self.refresh = RelayCommand(self._reload, lambda: not self.loading)
+```
+
+```xml
+<button text="Open" command="{open}" command_parameter="{data.selected}" />
+<button text="Settings" command="{nav.navigate}" command_parameter="settings" />
+```
+
+Unlike MVVM Light, you rarely call `raise_can_execute_changed()`:
+`can_execute` reads observables, so it updates on its own. Call it only
+when `can_execute` depends on something that isn't observable.
+
+## Shell apps (`mvvm.py`, `<content>`)
+
+A shell swaps pages by changing a view model; the view follows.
+
+* **`<content content="{nav.current}" />`** shows a view for whatever view
+  model the binding holds, chosen by its type, and swaps views when it
+  changes (WPF's `ContentControl` + `DataTemplate`). Register views with
+  `gui.template(PageViewModel, xml)`. `cache="true"` keeps the 10 most
+  recent views alive (`cache="N"` for N), so a page keeps its scroll
+  position and selection when you come back.
+* **`Navigator(routes)`** holds `current`, `current_route` and a back
+  stack. `go(route, parameter)`, the bindable `navigate` command, and
+  `go_back` (disabled when there's nothing to go back to).
+* **`Messenger`** sends messages between view models that don't know each
+  other, by message type, with optional tokens as channels. Recipients are
+  held weakly. `Messenger.default` is a shared instance.
+
+`shell.py` puts these together: a navigation pane bound to the navigator,
+a back button, list and detail pages (the detail page is opened with a
+command parameter), and a Settings page that turns on dark mode by sending
+a message the shell listens for.
 
 ## Views (`gui.py`)
 
@@ -170,12 +222,33 @@ discarded view model is freed after the next change to its inputs.
 * **Any other option** can be bound one-way: `foreground="{status_color}"`.
 * **Converters:** `number`, `int`, `money`, `percent`, `not`, `exists`,
   `upper`. Add your own with `gui.converter(name, to_view, to_model=None)`.
-* **Commands:** `command="{save}"`, `on_return="{add}"`, `on_delete=...`.
-  A bound command disables its widget when `can_execute` is false.
+* **Commands:** `command="{save}"`, `on_return="{add}"`, `on_delete=...`,
+  with an optional `command_parameter="{...}"`. A bound command disables its
+  widget when `can_execute` is false.
 * **Components:** `gui.register("switch", '<checkbutton style="Switch.TCheckbutton" />')`.
   `$attr` is substituted from the use site. Attributes the template doesn't
   use (bindings, layout) pass through to its root element.
 * **Lifetime:** a widget's bindings are disposed when the widget is destroyed.
+
+## Themes
+
+Widgets use the platform's own ttk theme: Windows' native look on
+Windows, Aqua on macOS, and `clam` on Linux, which has no native one.
+`gui.py` depends on no theme.
+
+To use another theme, pass it to `create_root` or `run`:
+
+```python
+import winui_ttk
+gui.run(VIEW, vm, title="App", theme=winui_ttk.Theme)    # needs Tk 9
+```
+
+`theme` is called as `theme(root, scale=scale)`. If the object it returns
+has `set_mode("light" | "dark")`, a view's `theme="{...}"` binding switches
+it; with the platform theme that binding does nothing. Views can ask for
+styles a theme may not have (`Accent.TButton`, `Switch.TCheckbutton`,
+`Toolbutton`): ttk falls back to the plain style, so the same view works
+either way. Both demos take `--winui` (see `winui_ttk/README.md`).
 
 ## HiDPI
 
@@ -191,9 +264,9 @@ discarded view model is freed after the next change to its inputs.
 * **Pixel attributes** in views are multiplied by the scale: `padding`,
   `padx`/`pady`, `ipadx`/`ipady`, `spacing`, `length`, `wraplength` and
   treeview column widths. Values in Tk units (`"5p"`) are left alone.
-* **Theme:** Sun Valley loads its 1x or 2x image set and scales its own
-  borders and padding to match. At fractional scales below 1.5 it uses 1x
-  images, and from 1.5 up it uses 2x.
+* **Platform theme:** Treeview row heights follow the font. On Linux,
+  `clam`'s arrows and check marks are scaled too (Windows and macOS draw
+  theirs at the system DPI).
 
 ## Not done yet
 
@@ -203,7 +276,3 @@ discarded view model is freed after the next change to its inputs.
   for hundreds of rows but not for many thousands.
 * Background threads. Tk isn't thread-safe; marshal changes onto the UI
   thread (e.g. `root.after`) before writing to the view model.
-* Theme images exist at 1x and 2x only. Above 2x, the theme's borders and
-  indicators stay at 2x size while text and layout keep growing.
-
-Theme: [Sun Valley](https://github.com/rdbende/Sun-Valley-ttk-theme) by rdbende.

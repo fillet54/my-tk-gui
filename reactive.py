@@ -32,13 +32,15 @@ Class-level sugar::
             return f"{self.first} {self.last}".strip()
 """
 
+import functools
+import inspect
 import threading
 from collections.abc import MutableSequence
 from contextlib import contextmanager
 
 __all__ = [
     "Observable", "Computed", "Reaction", "ObservableList",
-    "observable", "computed", "command", "BoundCommand", "autorun", "watch",
+    "observable", "computed", "command", "Command", "RelayCommand", "BoundCommand", "autorun", "watch",
     "batch", "untracked", "CycleError",
 ]
 
@@ -402,13 +404,100 @@ class computed:
         raise AttributeError("computed attribute %r is read-only" % self._name)
 
 
-class BoundCommand:
-    """A view model action plus whether it can run right now.
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
 
-    Calling it runs the action inside ``batch()``, so the view updates once
-    afterwards. ``can_execute`` is tracked like any computed value, which is
-    how a bound button enables and disables itself.
+def _takes_parameter(fn, bound=0):
+    """True if ``fn`` accepts a positional argument after ``bound`` others."""
+    try:
+        return _takes_parameter_cached(fn, bound)
+    except TypeError:          # unhashable callable
+        return _signature_takes_parameter(fn, bound)
+
+
+@functools.lru_cache(maxsize=1024)
+def _takes_parameter_cached(fn, bound):
+    return _signature_takes_parameter(fn, bound)
+
+
+def _signature_takes_parameter(fn, bound):
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    if any(p.kind is p.VAR_POSITIONAL for p in params):
+        return True
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) > bound
+
+
+class Command:
+    """What a view binds ``command="{...}"`` to (MVVM Light's ICommand).
+
+    ``execute(parameter)`` runs the action, inside ``batch()``, if
+    ``can_execute(parameter)`` allows it. ``can_execute`` is read through
+    observables, so a bound button enables and disables itself; call
+    ``raise_can_execute_changed()`` only when it depends on something that
+    isn't observable. Calling the command is the same as ``execute``.
     """
+
+    def execute(self, parameter=None):
+        raise NotImplementedError
+
+    def can_execute(self, parameter=None):
+        return True
+
+    def raise_can_execute_changed(self):
+        pass
+
+    def __call__(self, parameter=None):
+        return self.execute(parameter)
+
+
+class RelayCommand(Command):
+    """A command from plain functions, like MVVM Light's RelayCommand::
+
+        self.save = RelayCommand(self._save, lambda: bool(self.name))
+        self.open = RelayCommand(lambda item: ..., lambda item: item is not None)
+
+    Either function may take the command parameter or not.
+    """
+
+    def __init__(self, execute, can_execute=None, name=None):
+        self._execute = execute
+        self._check = can_execute
+        self._version = Observable(0)
+        self.name = name or getattr(execute, "__name__", "command")
+
+    def can_execute(self, parameter=None):
+        self._version.get()
+        if self._check is None:
+            return True
+        return bool(_call(self._check, (), parameter))
+
+    def execute(self, parameter=None):
+        with batch():
+            if self.can_execute(parameter):
+                return _call(self._execute, (), parameter)
+
+    def raise_can_execute_changed(self):
+        with untracked():
+            self._version.set(self._version.get() + 1)
+
+    def __repr__(self):
+        return "<RelayCommand %s>" % self.name
+
+
+def _call(fn, bound, parameter):
+    """Call ``fn(*bound)``, adding ``parameter`` if ``fn`` takes one more argument."""
+    if _takes_parameter(fn, len(bound)):
+        return fn(*bound, parameter)
+    return fn(*bound)
+
+
+class BoundCommand(Command):
+    """A ``@command`` method on one view model instance."""
 
     __slots__ = ("_instance", "_command")
 
@@ -416,13 +505,18 @@ class BoundCommand:
         self._instance = instance
         self._command = command
 
-    def __call__(self, *args, **kwargs):
+    def execute(self, parameter=None):
         with batch():
-            return self._command._fn(self._instance, *args, **kwargs)
+            if self.can_execute(parameter):
+                return _call(self._command._fn, (self._instance,), parameter)
 
-    @property
-    def can_execute(self):
-        return self._command._can_execute_cell(self._instance).get()
+    def can_execute(self, parameter=None):
+        return self._command._can_execute(self._instance, parameter)
+
+    def raise_can_execute_changed(self):
+        version = self._command._version(self._instance)
+        with untracked():
+            version.set(version.get() + 1)
 
     @property
     def name(self):
@@ -436,26 +530,42 @@ class _CommandDescriptor:
     def __init__(self, fn, can_execute):
         self._fn = fn
         self._name = fn.__name__
-        self._can_execute = can_execute
+        self._check = can_execute
         self.__doc__ = fn.__doc__
 
     def __set_name__(self, owner, name):
         self._name = name
 
-    def _can_execute_cell(self, instance):
-        cells = instance.__dict__.setdefault("__reactive_cells__", {})
-        key = self._name + ".can_execute"
-        cell = cells.get(key)
-        if cell is None:
-            check = self._can_execute
-            if check is None:
-                fn = lambda: True
-            elif hasattr(check, "__get__") and not callable(check):
-                fn = lambda: check.__get__(instance)        # a @computed
-            else:
-                fn = lambda: bool(check(instance))
-            cell = cells[key] = Computed(fn, name="%s.%s" % (type(instance).__name__, key))
-        return cell
+    def _cells(self, instance):
+        return instance.__dict__.setdefault("__reactive_cells__", {})
+
+    def _version(self, instance):
+        cells = self._cells(instance)
+        key = self._name + ".version"
+        if key not in cells:
+            cells[key] = Observable(0, name="%s.%s" % (type(instance).__name__, key))
+        return cells[key]
+
+    def _can_execute(self, instance, parameter):
+        version = self._version(instance)
+        check = self._check
+        if check is None:
+            version.get()
+            return True
+        if hasattr(check, "__get__") and not callable(check):      # a @computed
+            version.get()
+            return bool(check.__get__(instance))
+        if not _takes_parameter(check, 1):
+            # No parameter: cache it like a computed property. The version is
+            # read inside, so raise_can_execute_changed() recomputes it.
+            cells = self._cells(instance)
+            key = self._name + ".can_execute"
+            if key not in cells:
+                cells[key] = Computed(lambda: version.get() is not None and bool(check(instance)),
+                                      name="%s.%s" % (type(instance).__name__, key))
+            return cells[key].get()
+        version.get()
+        return bool(check(instance, parameter))
 
     def __get__(self, instance, owner=None):
         if instance is None:
@@ -464,10 +574,11 @@ class _CommandDescriptor:
 
 
 def command(fn=None, *, can_execute=None):
-    """Declares a view model action.
+    """Declares a view model action (a ``Command``).
 
-    ``can_execute`` is a function of ``self`` or a ``@computed`` declared
-    above it::
+    The method may take a parameter (``command_parameter`` in a view, or
+    ``vm.open.execute(item)``). ``can_execute`` is a function of ``self``,
+    of ``self`` and the parameter, or a ``@computed`` declared above it::
 
         @computed
         def can_save(self):
@@ -475,6 +586,9 @@ def command(fn=None, *, can_execute=None):
 
         @command(can_execute=can_save)
         def save(self): ...
+
+        @command(can_execute=lambda self, item: item is not None)
+        def open(self, item): ...
     """
     if fn is None:
         return lambda f: _CommandDescriptor(f, can_execute)

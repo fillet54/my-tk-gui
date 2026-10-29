@@ -71,6 +71,7 @@ class ExpensesViewModel:
 
     categories = CATEGORIES
     filter_options = ["All"] + CATEGORIES
+    can_change_theme = False        # set by the app when its theme has light/dark modes
 
     def __init__(self, expenses=()):
         self.form = NewExpenseForm()

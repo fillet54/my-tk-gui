@@ -8,7 +8,7 @@ from expenses import Expense, ExpensesViewModel, sample
 class TestNewExpenseForm(unittest.TestCase):
     def test_add_enabled_only_when_valid(self):
         vm = ExpensesViewModel()
-        self.assertFalse(vm.add.can_execute)
+        self.assertFalse(vm.add.can_execute())
         self.assertEqual(vm.form.error, "")          # quiet until typed into
 
         vm.form.description = "Lunch"
@@ -19,7 +19,7 @@ class TestNewExpenseForm(unittest.TestCase):
         self.assertEqual(vm.form.error, "Amount must be more than zero.")
         vm.form.amount_text = "$12.50"
         self.assertEqual(vm.form.error, "")
-        self.assertTrue(vm.add.can_execute)
+        self.assertTrue(vm.add.can_execute())
 
     def test_add_appends_resets_and_selects(self):
         vm = ExpensesViewModel()
@@ -29,7 +29,7 @@ class TestNewExpenseForm(unittest.TestCase):
         self.assertIs(vm.selected, vm.expenses[0])
         self.assertEqual(vm.selected.amount, 12.5)
         self.assertEqual((vm.form.description, vm.form.amount_text), ("", ""))
-        self.assertFalse(vm.add.can_execute)
+        self.assertFalse(vm.add.can_execute())
 
 
 class TestFiltering(unittest.TestCase):
@@ -44,9 +44,9 @@ class TestFiltering(unittest.TestCase):
 
     def test_clear_filters(self):
         vm = sample()
-        self.assertFalse(vm.clear_filters.can_execute)
+        self.assertFalse(vm.clear_filters.can_execute())
         vm.search = "x"
-        self.assertTrue(vm.clear_filters.can_execute)
+        self.assertTrue(vm.clear_filters.can_execute())
         vm.clear_filters()
         self.assertEqual((vm.search, vm.category_filter), ("", "All"))
 
@@ -69,7 +69,7 @@ class TestBudget(unittest.TestCase):
 
     def test_remove(self):
         vm = sample()
-        self.assertFalse(vm.remove.can_execute)
+        self.assertFalse(vm.remove.can_execute())
         vm.selected = vm.expenses[1]
         vm.remove()
         self.assertEqual(len(vm.expenses), 5)

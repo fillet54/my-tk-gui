@@ -14,6 +14,11 @@ never needs to be told what changed.
 Elements
     group, row, form      frames; children stack vertically / horizontally
     fields                two-column grid; each child's ``label`` becomes a caption
+    content               shows a view for the view model in ``content``,
+                          chosen by its type (see ``template``); swaps views
+                          when the binding changes. ``cache="true"`` keeps
+                          the 10 most recent views alive (``cache="N"``: N)
+                          so pages keep their state between visits.
     any ttk widget name   label, entry, button, spinbox, combobox, treeview, ...
     register()ed names    custom components (switch and accentbutton are built in)
 
@@ -23,7 +28,10 @@ Special attributes
                           become relative; ``{$root.x}`` still reaches the top
                           view model). Disabled while the context is None.
     enabled               bool binding; disabled cascades to children
-    theme                 "light" or "dark" (usually bound)
+    command_parameter     passed to this element's command(s) and their
+                          ``can_execute`` (usually bound)
+    theme                 "light" or "dark" (usually bound); passed to the
+                          window's theme if it has modes (see ``create_root``)
     on_return, on_escape, on_delete, on_double_click, on_<Event>
                           run a command on that event
     side, fill, expand, anchor, padx, pady, ipadx, ipady
@@ -41,17 +49,16 @@ import re
 import subprocess
 import tkinter as tk
 import tkinter.font as tkfont
-from collections import ChainMap
+from collections import ChainMap, OrderedDict
 from string import Template
 from tkinter import ttk
 from xml.etree.ElementTree import XML, Element
 
-from reactive import BoundCommand, ObservableList, untracked, watch
+from reactive import ObservableList, untracked, watch
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 
 PACK_OPTIONS = {"side", "fill", "expand", "anchor", "padx", "pady", "ipadx", "ipady"}
-META_OPTIONS = {"id", "context", "enabled", "theme", "label"}
+META_OPTIONS = {"id", "context", "enabled", "theme", "label", "command_parameter"}
 CONTAINERS = {"group", "row", "form", "fields"}
 # Attributes in pixels, written at 1x and scaled for the screen.
 SCALED_OPTIONS = {"padding", "padx", "pady", "ipadx", "ipady", "spacing", "length", "wraplength"}
@@ -268,6 +275,33 @@ register("accentbutton", '<button style="Accent.TButton" />')
 
 
 # --------------------------------------------------------------------------
+# View templates: which view shows a view model (WPF's DataTemplate)
+# --------------------------------------------------------------------------
+
+_templates = {}
+
+
+def template(view_model_type, xml):
+    """Show ``xml`` for view models of ``view_model_type`` (or a subclass)
+    wherever a ``<content>`` element displays one::
+
+        gui.template(SettingsViewModel, SETTINGS_VIEW)
+        <content content="{nav.current}" />
+
+    ``xml`` may also be a function of the view model returning the XML.
+    """
+    _templates[view_model_type] = xml
+
+
+def template_for(view_model):
+    for cls in type(view_model).__mro__:
+        if cls in _templates:
+            xml = _templates[cls]
+            return xml(view_model) if callable(xml) else xml
+    return None
+
+
+# --------------------------------------------------------------------------
 # Building views
 # --------------------------------------------------------------------------
 
@@ -344,29 +378,33 @@ class _Builder:
         for k in PACK_OPTIONS:
             attrs.pop(k, None)
 
-        enabled = self._enabled_getter(meta.get("enabled"), attrs.get("command"), parent_enabled)
+        parameter = meta.get("command_parameter")
+        parameter = (parameter.value if is_binding(parameter) else (lambda p=parameter: p))
+        enabled = self._enabled_getter(meta.get("enabled"), attrs.get("command"), parameter, parent_enabled)
 
         if element.tag in CONTAINERS:
             widget = self._container(master, element, attrs, meta, context, enabled)
+        elif element.tag == "content":
+            widget = self._content(master, attrs)
         else:
-            widget = self._widget(master, element, attrs, context)
+            widget = self._widget(master, element, attrs, context, parameter)
 
         if "id" in meta:
             self.ids[meta["id"]] = widget
         if "theme" in meta:
             self._bind_theme(widget, meta["theme"])
         for name, binding in events.items():
-            self._bind_event(widget, name[3:], binding)
-        if enabled is not None and element.tag not in CONTAINERS:
+            self._bind_event(widget, name[3:], binding, parameter)
+        if enabled is not None and element.tag not in CONTAINERS and element.tag != "content":
             self.watch(widget, enabled, lambda on: widget.state(["!disabled" if on else "disabled"]))
         return widget
 
-    def _enabled_getter(self, own, command, parent):
+    def _enabled_getter(self, own, command, parameter, parent):
         getters = [g for g in (parent,) if g]
         if own is not None:
             getters.append(own.value if is_binding(own) else (lambda v=own: v not in ("0", "false", "")))
         if isinstance(command, Binding):
-            getters.append(lambda: _can_execute(command.value()))
+            getters.append(lambda: _can_execute(command.value(), parameter()))
         if not getters:
             return None
         if len(getters) == 1:
@@ -416,7 +454,7 @@ class _Builder:
             widget = self.build(frame, child, context, enabled)
             widget.grid(row=row, column=column, columnspan=span, sticky="ew", pady=(0, spacing))
 
-    def _widget(self, master, element, attrs, context):
+    def _widget(self, master, element, attrs, context, parameter=lambda: None):
         cls = _WIDGETS.get(element.tag) or getattr(ttk, element.tag.capitalize(), None)
         if cls is None:
             raise ValueError("unknown element <%s>" % element.tag)
@@ -430,11 +468,61 @@ class _Builder:
             if not is_binding(binding):
                 continue
             handler = _SPECIAL.get((kind, name)) or _SPECIAL.get(("*", name))
-            if handler:
+            if name == "command":
+                self._bind_command(widget, binding, parameter)
+            elif handler:
                 handler(self, widget, binding)
             else:
                 self._bind_option(widget, name, binding)
         return widget
+
+    # -- content host (views swapped by binding) ------------------------------
+
+    def _content(self, master, attrs):
+        binding = attrs.pop("content", None)
+        limit = _cache_limit(attrs.pop("cache", "false"))
+        frame = ttk.Frame(master, **_literals(attrs))
+        self._bind_options(frame, attrs)
+        shown = {"vm": None, "view": None}
+        cached = OrderedDict()      # id(view model) -> (view model, View), oldest first
+
+        def show(vm):
+            if vm is shown["vm"] and shown["view"] is not None:
+                return
+            old = shown["view"]
+            if old is not None:
+                if limit:
+                    old.widget.pack_forget()
+                else:
+                    old.destroy()
+            shown["vm"], shown["view"] = vm, None
+            if vm is None:
+                return
+            entry = cached.pop(id(vm), None)
+            view = entry[1] if entry and entry[0] is vm else None
+            if view is None:
+                view = self._realize_template(frame, vm)
+            if limit:
+                cached[id(vm)] = (vm, view)
+                while len(cached) > limit:
+                    _, (_, oldest) = cached.popitem(last=False)
+                    oldest.destroy()
+            view.widget.pack(fill="both", expand=True)
+            shown["view"] = view
+
+        if is_binding(binding):
+            self.watch(frame, binding.value, show)
+        elif binding is not None:
+            raise ValueError("<content> needs a binding: content=\"{...}\"")
+        return frame
+
+    def _realize_template(self, master, vm):
+        xml = template_for(vm)
+        if xml is None:
+            label = ttk.Label(master, text="No view registered for %s (use gui.template)"
+                              % type(vm).__name__)
+            return View(label, {})
+        return realize(master, xml, vm, scheduler=self.scheduler, scale=self.scale)
 
     # -- property bindings ----------------------------------------------------
 
@@ -498,28 +586,34 @@ class _Builder:
         self._bind_variable(widget, binding, tk.DoubleVar(widget), "variable",
                             to_var=lambda v: float(v or 0))
 
-    def _bind_command(self, widget, binding):
+    def _bind_command(self, widget, binding, parameter=lambda: None):
         def run():
             with untracked():
-                fn = binding.value()
-            if _can_execute(fn):
-                fn()
+                fn, arg = binding.value(), parameter()
+            if _can_execute(fn, arg):
+                _execute(fn, arg)
         widget.configure(command=run)
 
-    def _bind_event(self, widget, name, binding):
+    def _bind_event(self, widget, name, binding, parameter=lambda: None):
         sequence = EVENTS.get(name, "<%s>" % name)
 
         def run(event):
             with untracked():
                 fn = binding.value() if is_binding(binding) else None
-            if _can_execute(fn):
-                fn()
+                arg = parameter()
+            if _can_execute(fn, arg):
+                _execute(fn, arg)
                 return "break"
 
         widget.bind(sequence, run, add="+")
 
     def _bind_theme(self, widget, binding):
-        apply = lambda name: widget.tk.call("set_theme", name or "light")
+        # Only a theme object passed to create_root() has light/dark modes;
+        # the platform's own ttk theme follows the OS, so this does nothing.
+        theme = getattr(widget._root(), "ui_theme", None)
+        if not hasattr(theme, "set_mode"):
+            return
+        apply = lambda name: theme.set_mode(name or "light")
         if is_binding(binding):
             self.watch(widget, binding.value, apply)
         else:
@@ -612,19 +706,35 @@ _SPECIAL = {
     ("checkbutton", "checked"): _Builder._bind_checked,
     ("radiobutton", "selected"): _Builder._bind_radio,
     ("scale", "value"): _Builder._bind_scale,
-    ("*", "command"): _Builder._bind_command,
 }
 
 # Attributes that are bindings-only (no Tk option of that name).
 _BINDING_ONLY = {"checked", "selected"}
 
 
-def _can_execute(fn):
+def _cache_limit(value):
+    """``cache`` on <content>: "true" keeps the 10 most recent views, a number that many."""
+    value = str(value).strip().lower()
+    if value in ("", "0", "false", "no"):
+        return 0
+    return 10 if value in ("1", "true", "yes") else int(value)
+
+
+def _can_execute(fn, parameter=None):
+    """Commands (``reactive.Command``) say; plain callables can always run."""
     if fn is None:
         return False
-    if isinstance(fn, BoundCommand):
-        return fn.can_execute
-    return True
+    check = getattr(fn, "can_execute", None)
+    return bool(check(parameter)) if callable(check) else True
+
+
+def _execute(fn, parameter=None):
+    if hasattr(fn, "execute"):
+        fn.execute(parameter)
+    elif parameter is None:
+        fn()
+    else:
+        fn(parameter)
 
 
 def _set_invalid(widget, invalid):
@@ -711,8 +821,7 @@ def detect_scale(root):
     if system == "aqua":
         return 1.0
     if system == "win32":
-        from hidpi import Get_HWND_DPI
-        return Get_HWND_DPI(root.winfo_id())[2]
+        return _windows_scale(root)
 
     gdk = _env_number("GDK_SCALE")
     if gdk:
@@ -724,6 +833,18 @@ def detect_scale(root):
     if qt:
         return qt
     return max(1.0, round(root.winfo_fpixels("1i") / 96, 2))
+
+
+def _windows_scale(root):
+    """The effective DPI of the monitor the window is on, / 96."""
+    try:
+        from ctypes import byref, windll, wintypes
+        monitor = windll.user32.MonitorFromWindow(wintypes.HWND(root.winfo_id()), 2)  # nearest
+        x, y = wintypes.UINT(), wintypes.UINT()
+        windll.shcore.GetDpiForMonitor(monitor, 0, byref(x), byref(y))       # effective DPI
+        return (x.value + y.value) / (2 * 96)
+    except (AttributeError, OSError):
+        return 1.0
 
 
 def _env_number(name):
@@ -753,8 +874,16 @@ def _fonts_to_points(root):
             font.configure(size=max(1, round(-size * 72 / 96)))
 
 
-def create_root(title="", scale=None):
-    """A themed Tk root window, scaled for the screen it's on."""
+def create_root(title="", scale=None, theme=None):
+    """A Tk root window, scaled for the screen it's on.
+
+    Widgets use the platform's own ttk theme (Windows' native look on
+    Windows, Aqua on macOS, ``clam`` on Linux, which has no native one).
+    ``theme`` is an optional theme to install instead, called as
+    ``theme(root, scale=scale)``; for example ``winui_ttk.Theme``. If the
+    object it returns has ``set_mode("light" | "dark")``, a view's
+    ``theme="{...}"`` binding switches it.
+    """
     if os.name == "nt":
         try:   # must happen before Tk creates its first window
             import ctypes
@@ -769,16 +898,30 @@ def create_root(title="", scale=None):
         root.tk.call("tk", "scaling", scale * 96 / 72)   # points -> pixels
         _fonts_to_points(root)
 
-    # The theme ships 1x and 2x images; it scales its own borders to match.
-    root.tk.eval("namespace eval ::sv {variable scale %d}" % (2 if scale >= 1.5 else 1))
-    root.tk.call("source", os.path.join(HERE, "theme", "sun-valley.tcl"))
-    root.tk.call("set_theme", "light")
+    root.ui_theme = None
+    if theme is not None:
+        root.ui_theme = theme(root, scale=scale)
+    else:
+        style = ttk.Style(root)
+        if root.tk.call("tk", "windowingsystem") == "x11":
+            style.theme_use("clam")
+            # clam draws arrows and check/radio marks at fixed pixel sizes
+            # (Windows and macOS draw theirs at the system's DPI).
+            arrow = round(14 * scale)
+            for name in ("TCombobox", "TSpinbox", "TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+                style.configure(name, arrowsize=arrow)
+            for name in ("TCheckbutton", "TRadiobutton"):
+                style.configure(name, indicatorsize=round(12 * scale), indicatormargin=round(4 * scale))
+        # The platform themes give Treeview rows a fixed pixel height, which
+        # clips text once fonts scale up; size rows from the font instead.
+        line = tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace")
+        style.configure("Treeview", rowheight=line + round(6 * scale))
     return root
 
 
-def run(xml, view_model, title="", minsize=None):
+def run(xml, view_model, title="", minsize=None, theme=None):
     """Create a window, bind ``xml`` to ``view_model`` and run the event loop."""
-    root = create_root(title)
+    root = create_root(title, theme=theme)
     view = realize(root, xml, view_model)
     view.widget.pack(fill="both", expand=True)
     if minsize:

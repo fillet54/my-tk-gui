@@ -4,17 +4,31 @@ There is no event-handling code in this file. Try:
   * typing in the form -- the error message and the Add button follow along
   * selecting a row and editing it -- the list, totals and budget bar update
   * searching / filtering -- the count and filtered total update
-  * the dark mode switch
+  * the dark mode switch (with --winui)
+
+    python3 demo.py            # the platform's own look
+    python3 demo.py --winui    # the optional WinUI theme (needs Tk 9)
 """
+
+import sys
 
 import gui
 from expenses import sample
+
+
+def theme_option():
+    """``--winui`` on the command line: use winui_ttk (needs Tk 9) instead of
+    the platform's look. Only a theme with light/dark modes can switch."""
+    if "--winui" in sys.argv:
+        import winui_ttk
+        return winui_ttk.Theme
+    return None
 
 VIEW = """
 <form padding="16" theme="{theme}">
   <row fill="x">
     <label text="Expenses" font="-size 18 -weight bold" />
-    <switch text="Dark mode" checked="{dark_mode}" side="right" padx="0" />
+    <switch text="Dark mode" checked="{dark_mode}" enabled="{can_change_theme}" side="right" padx="0" />
   </row>
 
   <row fill="both" expand="1" pady="12 0">
@@ -71,4 +85,7 @@ VIEW = """
 """
 
 if __name__ == "__main__":
-    gui.run(VIEW, sample(), title="Expenses", minsize=(900, 560))
+    theme = theme_option()
+    vm = sample()
+    vm.can_change_theme = theme is not None
+    gui.run(VIEW, vm, title="Expenses", minsize=(900, 560), theme=theme)
