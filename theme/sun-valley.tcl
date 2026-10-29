@@ -1,5 +1,24 @@
 # Copyright © 2021 rdbende <rdbende@gmail.com>
 
+# Scale: set ::sv::scale (1 or 2) before sourcing this file. It picks the
+# image set (theme/<mode> or theme/<mode>/hidpi) and multiplies every pixel
+# size in the theme (borders, padding, element widths) to match.
+namespace eval ::sv {
+    if {![info exists scale]} { variable scale 1 }
+
+    proc px {args} {
+        variable scale
+        set out {}
+        foreach v $args { lappend out [expr {int(round($v * $scale))}] }
+        return $out
+    }
+
+    proc assets {} {
+        variable scale
+        return [expr {$scale >= 2 ? "hidpi" : ""}]
+    }
+}
+
 source [file join [file dirname [info script]] theme light.tcl]
 source [file join [file dirname [info script]] theme dark.tcl]
 
